@@ -224,14 +224,15 @@ class GMMHMMWrapper:
 
 
 
-
-
 class GaussianARHMM:
     """
-    A robust AR(1) HMM. Single-lag, with alpha optionally learned.
-    Uses forward-backward to compute exact pairwise posteriors (xi),
-    applies probability floors for transitions / startprob to avoid log(0) issues,
-    and does multi-pass updates for alpha and AR coefficients in each M-step.
+    A robust AR(1) HMM consistent with the formula:
+        X_t = means[j] + alpha * (ar_coeffs_[j] @ X_{t-1}) + noise
+
+    Single-lag, with alpha optionally learned. Uses forward-backward to compute
+    exact pairwise posteriors (xi). Applies probability floors for transitions
+    and startprob to avoid log(0) issues, and supports repeated passes to refine
+    alpha and AR coefficients in each M-step.
     """
 
     def __init__(
@@ -258,15 +259,15 @@ class GaussianARHMM:
         tol : float
             Convergence threshold on log-likelihood.
         alpha : float
-            Initial alpha for AR(1): X(t) ~ means[j] + alpha * A_j (X(t-1) - means[j]) + noise.
+            Initial alpha for AR(1): X_t ~ mu_j + alpha * A_j X_{t-1} + noise.
         alpha_is_free : bool
-            If True, we reestimate alpha each M-step.
+            If True, we re-estimate alpha each M-step; otherwise, alpha is fixed.
         p : int
             AR order (currently only p=1 implemented).
         floor_prob : float
-            Minimal probability for transitions / startprobs to avoid log(0).
+            Minimal probability floor for transitions and startprob.
         max_alpha_passes : int
-            Times we refine alpha and AR in the M-step mini-loop for better accuracy.
+            Times we refine alpha and AR in the M-step mini-loop.
         """
         self.n_regimes = n_regimes
         self.covariance_type = covariance_type
@@ -294,6 +295,7 @@ class GaussianARHMM:
         # means: shape (n_regimes, n_features)
         self.means_ = np.random.randn(self.n_regimes, n_features)
         # AR coeffs: shape (n_regimes, n_features, n_features)
+        # Each A_j is (d x d), so (ar_coeffs_[j] @ X_{t-1}) has shape (d,)
         self.ar_coeffs_ = np.random.randn(self.n_regimes, n_features, n_features)
 
         # Covariances
@@ -314,8 +316,8 @@ class GaussianARHMM:
     def _compute_log_likelihood(self, data: np.ndarray) -> np.ndarray:
         """
         log_likelihood[t, j] = log p(X(t) | state=j).
-        For t=0, unconditional on X(t-1).
-        For t>0, means_[j] + alpha*(ar_coeffs_[j] @ X(t-1) - means_[j]).
+        For t=0, we treat X(0) as generated from N(means_[j], covars_[j]).
+        For t>0:  means_[j] + alpha * (ar_coeffs_[j] @ X(t-1)).
         """
         n_samples, d = data.shape
         log_likelihood = np.zeros((n_samples, self.n_regimes))
@@ -330,7 +332,8 @@ class GaussianARHMM:
         # t >= 1
         for t in range(1, n_samples):
             for j in range(self.n_regimes):
-                ar_mean = self.means_[j] + self.alpha * (self.ar_coeffs_[j] @ (data[t-1] - self.means_[j]))
+                # AR(1) prediction: mu_j + alpha * (A_j @ X_{t-1})
+                ar_mean = self.means_[j] + self.alpha * (self.ar_coeffs_[j] @ data[t - 1])
                 if self.covariance_type == 'full':
                     log_likelihood[t, j] = _log_gaussian(data[t], ar_mean, self.covars_[j])
                 else:
@@ -352,7 +355,7 @@ class GaussianARHMM:
         # recursion
         for t in range(1, n_samples):
             for j in range(n_states):
-                temp = forward[t-1] + np.log(self.transmat_[:, j])
+                temp = forward[t - 1] + np.log(self.transmat_[:, j])
                 forward[t, j] = np.logaddexp.reduce(temp) + log_likelihood[t, j]
 
         return forward
@@ -370,13 +373,15 @@ class GaussianARHMM:
         # recursion
         for t in range(n_samples - 2, -1, -1):
             for i in range(n_states):
-                temp = np.log(self.transmat_[i]) + log_likelihood[t+1] + backward[t+1]
+                temp = np.log(self.transmat_[i]) + log_likelihood[t + 1] + backward[t + 1]
                 backward[t, i] = np.logaddexp.reduce(temp)
 
         return backward
 
-    def _compute_posteriors(self, forward: np.ndarray, backward: np.ndarray, log_likelihood: np.ndarray) -> (np.ndarray, np.ndarray):
+    def _compute_posteriors(self, forward: np.ndarray, backward: np.ndarray, log_likelihood: np.ndarray):
         """
+        Return (gamma, xi, total_ll)
+
         gamma[t, i] = p(state(t)=i | all data)
         xi[t, i, j] = p(state(t)=i, state(t+1)=j | all data)
         """
@@ -387,10 +392,12 @@ class GaussianARHMM:
         # xi: shape (n_samples-1, n_states, n_states)
         xi = np.zeros((n_samples - 1, n_states, n_states))
         for t in range(n_samples - 1):
-            temp = (forward[t, :, None] + np.log(self.transmat_) +
-                    backward[t+1, None, :] + np.expand_dims(log_likelihood[t+1], axis=0))
-            # temp shape: (n_states, n_states)
-            # Now exponentiate and normalize
+            temp = (
+                forward[t, :, None]
+                + np.log(self.transmat_)
+                + backward[t + 1, None, :]
+                + np.expand_dims(log_likelihood[t + 1], axis=0)
+            )
             max_val = np.max(temp)
             xi_t = np.exp(temp - max_val)
             xi_sum = np.sum(xi_t)
@@ -404,15 +411,13 @@ class GaussianARHMM:
     def _update_parameters(self, data: np.ndarray, gamma: np.ndarray, xi: np.ndarray):
         n_samples, d = data.shape
 
-        # (1) Start prob
-        start = gamma[0]
-        start += self.floor_prob
+        # (1) Start probs
+        start = gamma[0] + self.floor_prob
         start /= np.sum(start)
         self.startprob_ = start
 
-        # (2) Transmat
-        # sum over t of xi[t, i, j], then row-normalize with floors
-        trans_counts = np.sum(xi, axis=0)  # shape (n_states, n_states)
+        # (2) Transition matrix
+        trans_counts = np.sum(xi, axis=0)
         for i in range(self.n_regimes):
             row = trans_counts[i] + self.floor_prob
             row_sum = np.sum(row)
@@ -431,28 +436,28 @@ class GaussianARHMM:
             denom = counts_[j] + 1e-300
             self.means_[j] = sums_[j] / denom
 
-        # We'll do multiple passes to refine alpha & AR
+        # (4) Repeated passes to refine alpha & A_j
         for _ in range(self.max_alpha_passes):
             self._update_ar_coeffs(data, gamma)
             if self.alpha_is_free:
                 self._update_alpha(data, gamma)
 
-        # (4) Covariances
+        # (5) Covariances
         for j in range(self.n_regimes):
             sum_cov = np.zeros_like(self.covars_[j])
             count_j = 1e-300
             for t in range(n_samples):
                 w = gamma[t, j]
                 if t == 0:
+                    # At t=0, we assume X(0) ~ N(means_[j], covars_[j])
                     pred_mean = self.means_[j]
                 else:
-                    diff_t_1 = data[t-1] - self.means_[j]
-                    pred_mean = self.means_[j] + self.alpha*(self.ar_coeffs_[j] @ diff_t_1)
+                    pred_mean = self.means_[j] + self.alpha * (self.ar_coeffs_[j] @ data[t - 1])
                 resid = data[t] - pred_mean
                 if self.covariance_type == 'full':
                     sum_cov += w * np.outer(resid, resid)
-                else:  # diag
-                    sum_cov += w * (resid**2)
+                else:
+                    sum_cov += w * (resid ** 2)
                 count_j += w
             sum_cov /= count_j
             self.covars_[j] = sum_cov
@@ -460,48 +465,74 @@ class GaussianARHMM:
     def _update_ar_coeffs(self, data: np.ndarray, gamma: np.ndarray):
         """
         Weighted least squares for each state j:
-          Y(t) = data[t]-means_[j],
-          X(t) = (data[t-1]-means_[j]),
-          Y(t) = alpha * A_j X(t).
-        We'll solve A_j given alpha, for t=1..n_samples-1.
+          (X(t) - mu_j) = alpha * A_j X(t-1), for t=1..n_samples-1
+
+        We'll treat alpha as known here (either fixed or from a previous pass).
+        Then solve for A_j in normal eqns:
+
+           Y(t) = A_j Z(t),  where Y(t) = (X(t) - mu_j), Z(t) = alpha * X(t-1).
+
+        This yields:
+
+           A_j = pinv(Z^T W Z) (Z^T W Y).
+
+        We'll store A_j directly (no transpose).
         """
         n_samples, d = data.shape
         for j in range(self.n_regimes):
             ZtZ = np.zeros((d, d))
             ZtY = np.zeros((d, d))
+
             for t in range(1, n_samples):
                 w = gamma[t, j]
                 if w < 1e-12:
                     continue
-                xtm1 = data[t-1] - self.means_[j]
-                y_t = data[t] - self.means_[j]
-                z_t = self.alpha * xtm1  # shape (d,)
-                ZtZ += w * np.outer(z_t, z_t)
+
+                # Y(t) = X(t) - mu_j
+                y_t = data[t] - self.means_[j]   # shape (d,)
+
+                # Z(t) = alpha * X(t-1)
+                x_tminus1 = data[t - 1]          # shape (d,)
+                z_t = self.alpha * x_tminus1     # shape (d,)
+
+                # Weighted outer products
+                ZtZ += w * np.outer(z_t, z_t)  # shape (d,d)
                 ZtY += w * np.outer(z_t, y_t)
-            # pseudo-inverse
+
             if np.linalg.matrix_rank(ZtZ) < d:
+                # If rank-deficient, skip updating this state's A_j
                 continue
-            A_j = np.linalg.pinv(ZtZ) @ ZtY  # shape (d, d)
-            self.ar_coeffs_[j] = A_j.T
+
+            # Solve for A_j in shape (d, d)
+            # Y(t) ~ A_j Z(t)
+            A_j = np.linalg.pinv(ZtZ) @ ZtY  # shape (d,d)
+            self.ar_coeffs_[j] = A_j  # no .T needed if we want A_j @ x_{t-1}
 
     def _update_alpha(self, data: np.ndarray, gamma: np.ndarray):
         """
         Single global alpha across all states j:
-          alpha = sum_{t,j} w[t,j]*(<y_t, A_j x_t>) / sum_{t,j} w[t,j]*(<A_j x_t, A_j x_t>)
+          alpha = sum_{t,j} w[t,j]*(< (X(t)-mu_j), A_j X(t-1) >)
+                   / sum_{t,j} w[t,j]*(< A_j X(t-1), A_j X(t-1) >)
+
+        Weighted approach, ignoring t=0.
         """
         n_samples, d = data.shape
         num = 0.0
         den = 1e-300
+
         for j in range(self.n_regimes):
             for t in range(1, n_samples):
                 w = gamma[t, j]
                 if w < 1e-12:
                     continue
-                xtm1 = data[t-1] - self.means_[j]
-                y_t = data[t] - self.means_[j]
-                Ajx = self.ar_coeffs_[j] @ xtm1
+
+                y_t = data[t] - self.means_[j]   # shape (d,)
+                x_tminus1 = data[t - 1]
+                Ajx = self.ar_coeffs_[j] @ x_tminus1  # shape (d,)
+
                 num += w * np.dot(y_t, Ajx)
                 den += w * np.dot(Ajx, Ajx)
+
         self.alpha = num / den
 
     ########################################################################
@@ -518,10 +549,7 @@ class GaussianARHMM:
             forward = self._forward_pass(log_likelihood)
             backward = self._backward_pass(log_likelihood)
 
-            # compute gamma, xi
-
-            ll = np.logaddexp.reduce(forward[-1])
-            gamma, xi, _ = self._compute_posteriors(forward, backward, log_likelihood)
+            gamma, xi, ll = self._compute_posteriors(forward, backward, log_likelihood)
 
             # M-step
             self._update_parameters(data_array, gamma, xi)
@@ -536,7 +564,8 @@ class GaussianARHMM:
 
     def transform(self, data: pd.DataFrame) -> pd.Series:
         """
-        Basic posterior-based decoding (not true Viterbi).
+        Posterior-based decoding (not Viterbi).
+        We'll pick the argmax of gamma[t].
         """
         data_array = data.values if isinstance(data, pd.DataFrame) else data
         log_likelihood = self._compute_log_likelihood(data_array)
@@ -544,13 +573,14 @@ class GaussianARHMM:
         backward = self._backward_pass(log_likelihood)
         ll = np.logaddexp.reduce(forward[-1])
 
-        # posteriors
-        combined = forward + backward
-        gamma = np.exp(combined - ll)
+        gamma = np.exp(forward + backward - ll)
         states = np.argmax(gamma, axis=1)
         return pd.Series(states, index=data.index, name='Regime').apply(lambda x: f"regime{x+1}")
 
     def score(self, data: pd.DataFrame) -> float:
+        """
+        Return the total log-likelihood of the data under the model.
+        """
         data_array = data.values if isinstance(data, pd.DataFrame) else data
         log_likelihood = self._compute_log_likelihood(data_array)
         forward = self._forward_pass(log_likelihood)
@@ -562,8 +592,9 @@ class GaussianARHMM:
     def num_params(self) -> int:
         """
         AR(1) HMM param count:
+
           - init: (n_regimes - 1)
-          - transition: n_regimes*(n_regimes-1)
+          - transition: n_regimes*(n_regimes - 1)
           - means: n_regimes*d
           - AR coeff: n_regimes*(d^2)
           - alpha (if free): +1
@@ -575,15 +606,15 @@ class GaussianARHMM:
         d = self.means_.shape[1]
 
         init_params = n - 1
-        trans_params = n*(n-1)
-        means_params = n*d
-        ar_params = n*(d**2)
+        trans_params = n * (n - 1)
+        means_params = n * d
+        ar_params = n * (d ** 2)
         alpha_params = 1 if self.alpha_is_free else 0
 
         if self.covariance_type == 'full':
-            cov_params = n * ((d*(d+1)) // 2)
+            cov_params = n * (d * (d + 1) // 2)
         else:
-            cov_params = n*d
+            cov_params = n * d
 
         return init_params + trans_params + means_params + ar_params + alpha_params + cov_params
 
@@ -595,7 +626,7 @@ class GaussianARHMM:
             return 0
         n = self.n_regimes
         init_params = n - 1
-        trans_params = n*(n-1)
+        trans_params = n * (n - 1)
 
         d = self.means_.shape[1]
         means_params = self.means_.size
@@ -607,20 +638,11 @@ class GaussianARHMM:
             if self.covariance_type == 'full':
                 for c in self.covars_:
                     d_ = c.shape[0]
-                    cov_params += (d_*(d_+1))//2
+                    cov_params += (d_ * (d_ + 1)) // 2
             else:
                 cov_params = self.covars_.size
 
         return init_params + trans_params + means_params + ar_params + cov_params + alpha_params
-
-
-
-
-
-
-
-
-
 
 
 

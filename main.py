@@ -10,34 +10,35 @@ if __name__ == "__main__":
 
     macro_data = macro_df[['Macro_Signal_1', 'Macro_Signal_2']].copy()
 
+    n = 4
     N = 8
     
     model_list = (
         [
             {
                 "model_type": "gaussian",
-                "n": n,
+                "n": k,
                 "covariance_type": "full",
                 "n_iter": 30,
                 "tol": 1e-4
             }
-            for n in range(2, N)
+            for k in range(n, N+1)
         ]
         + [
             {
                 "model_type": "gmm",
-                "n": n,
+                "n": k,
                 "covariance_type": "full",
                 "n_mix": 2,
                 "n_iter": 30,
                 "tol": 1e-4
             }
-            for n in range(2, N)
+            for k in range(n, N+1)
         ]
         + [
             {
                 "model_type": "arhmm",
-                "n": n,
+                "n": k,
                 "covariance_type": "full",
                 "n_iter": 20,
                 "tol": 1e-3,
@@ -45,7 +46,7 @@ if __name__ == "__main__":
                 "alpha_is_free": False, 
                 "p": 1
             }
-            for n in range(2, N)
+            for k in range(n, N+1)
         ]
     )
 
