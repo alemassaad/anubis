@@ -10,8 +10,8 @@ if __name__ == "__main__":
 
     macro_data = macro_df[['Macro_Signal_1', 'Macro_Signal_2']].copy()
 
-    n = 4
-    N = 8
+    n = 2
+    N = 6
     
     model_list = (
         [

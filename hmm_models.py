@@ -4,46 +4,188 @@ import numpy as np
 import pandas as pd
 from hmmlearn import hmm
 from scipy.stats import multivariate_normal
+from hmmlearn.hmm import GaussianHMM,GMMHMM
+
+
 
 class MultivariateGaussian:
     """
-    Stores mean and covariance for a Gaussian distribution. Provides a PDF method.
+    Represents a multivariate Gaussian distribution.
+    
+    This class encapsulates the parameters of a multivariate Gaussian distribution
+    and provides methods to compute probability density values.
+    
+    Parameters
+    ----------
+    means : numpy.ndarray
+        Mean vector of the distribution, shape (d,) where d is the dimension
+    cov : numpy.ndarray
+        Covariance matrix, shape (d, d)
+        
+    Attributes
+    ----------
+    means : numpy.ndarray
+        Mean vector
+    cov : numpy.ndarray
+        Covariance matrix
+        
+    Notes
+    -----
+    This class is used as a building block for more complex models like
+    Gaussian HMMs and Gaussian Mixture Models.
+    The probability density function is given by:
+    p(x) = (2π)^(-d/2) |Σ|^(-1/2) exp(-0.5 (x-μ)ᵀΣ^(-1)(x-μ))
+    where μ is the mean vector, Σ is the covariance matrix, and d is the dimension.
     """
+
+
     def __init__(self, means, cov):
         self.means = means
         self.cov = cov
 
     def pdf(self, x):
+        """
+        Compute the probability density function (PDF) at point x.
+        
+        Parameters
+        ----------
+        x : numpy.ndarray
+            Point at which to evaluate the PDF, shape (d,)
+            
+        Returns
+        -------
+        float
+            The probability density at point x
+            
+        Notes
+        -----
+        Uses scipy.stats.multivariate_normal for the calculation.
+        """
+
         return multivariate_normal(mean=self.means, cov=self.cov).pdf(x)
+
+
+
+
 
 
 class GaussianMixture:
     """
-    Stores multiple (weight, MultivariateGaussian) pairs for mixture modeling.
-    Provides a PDF by summing component PDFs weighted by mixture weights.
+    Represents a Gaussian Mixture Model (GMM).
+    
+    A GMM is a weighted sum of multiple Gaussian distributions. This class
+    stores the components and provides methods to compute probability density values.
+    
+    Parameters
+    ----------
+    weights : numpy.ndarray
+        Mixture weights for each component, shape (n_components,)
+    gaussians : list of MultivariateGaussian
+        List of Gaussian components
+        
+    Attributes
+    ----------
+    weights : numpy.ndarray
+        Mixture weights
+    gaussians : list of MultivariateGaussian
+        Gaussian components
+        
+    Notes
+    -----
+    This class is used to represent emission distributions in the GMMHMM model.
+    The probability density function is given by:
+    p(x) = Σ(w_i * p_i(x))
+    where w_i are the mixture weights, and p_i(x) are the component densities.
     """
+
     def __init__(self, weights, gaussians):
         self.weights = weights
         self.gaussians = gaussians
 
     def pdf(self, x):
+        """
+        Compute the probability density function (PDF) at point x.
+        
+        For a mixture model, the PDF is the weighted sum of component PDFs.
+        
+        Parameters
+        ----------
+        x : numpy.ndarray
+            Point at which to evaluate the PDF, shape (d,)
+            
+        Returns
+        -------
+        float
+            The probability density at point x
+        """
+
         total = 0.0
         for w, g in zip(self.weights, self.gaussians):
             total += w * g.pdf(x)
         return total
 
 
+
+
+
+
+
 class GaussianHMMWrapper:
     """
-    Wraps hmmlearn's GaussianHMM. Provides parameter counting methods and 
-    a transform method for state prediction. 
+    Wrapper for hmmlearn's GaussianHMM with additional functionality.
+    
+    This class provides a consistent interface for working with Gaussian HMMs,
+    with additional methods for state prediction, parameter counting, and more.
+    
+    A Gaussian HMM models time series data as transitions between hidden states,
+    where each state emits observations according to a Gaussian distribution.
+    
+    Parameters
+    ----------
+    n_regimes : int
+        Number of hidden states (regimes)
+    covariance_type : str, default='full'
+        Type of covariance parameter, one of 'full', 'diag'
+    n_iter : int, default=100
+        Maximum number of EM iterations
+    tol : float, default=1e-3
+        Convergence threshold for EM algorithm
+        
+    Attributes
+    ----------
+    n_regimes : int
+        Number of hidden states
+    covariance_type : str
+        Type of covariance matrices
+    n_iter : int
+        Maximum EM iterations
+    tol : float
+        Convergence tolerance
+    model : hmmlearn.hmm.GaussianHMM
+        The underlying hmmlearn model
+    regime_list : list of MultivariateGaussian
+        List of emission distributions for each regime
+    regime_dict : dict
+        Mapping from regime names to distributions
+    index_remap : dict
+        Maps original indices to sorted regime indices
+        
+    Notes
+    -----
+    After fitting, regimes are sorted by their mean value on the first dimension
+    and renamed to "regime1", "regime2", etc.
+    
+    The joint probability of observations X = (x₁,...,x_T) and hidden states Z = (z₁,...,z_T) is:
+    p(X,Z) = p(z₁) * p(x₁|z₁) * Π[t=2 to T] p(z_t|z_{t-1}) * p(x_t|z_t)
+    where p(z₁) is the initial state probability, p(z_t|z_{t-1}) are transition probabilities,
+    and p(x_t|z_t) are emission probabilities modeled as Gaussians.
     """
+
     def __init__(self, n_regimes, covariance_type='full', n_iter=100, tol=1e-3):
         self.n_regimes = n_regimes
         self.covariance_type = covariance_type
         self.n_iter = n_iter
         self.tol = tol
-        from hmmlearn.hmm import GaussianHMM
         self.model = GaussianHMM(
             n_components=self.n_regimes,
             covariance_type=self.covariance_type,
@@ -55,6 +197,25 @@ class GaussianHMMWrapper:
         self.index_remap = {i: i for i in range(n_regimes)}
 
     def fit(self, data: pd.DataFrame):
+        """
+        Fit the Gaussian HMM to time series data.
+        
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Time series data to fit, with rows as time points and columns as variables
+            
+        Returns
+        -------
+        self
+            The fitted model instance
+            
+        Notes
+        -----
+        After fitting, regimes are sorted by their mean on the first dimension and 
+        indices are remapped accordingly.
+        """
+
         self.model.fit(data)
         for i in range(self.n_regimes):
             mg = MultivariateGaussian(
@@ -68,18 +229,73 @@ class GaussianHMMWrapper:
         self.regime_dict = {f"regime{i+1}": r for i, r in enumerate(self.regime_list)}
         return self
 
+
+
     def transform(self, data: pd.DataFrame) -> pd.Series:
+        """
+        Predict the most likely hidden state sequence for the given data.
+        
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Time series data for prediction
+            
+        Returns
+        -------
+        pd.Series
+            Series of predicted regime labels ("regime1", "regime2", etc.) with the
+            same index as the input data
+            
+        Notes
+        -----
+        Uses the Viterbi algorithm to find the most likely state sequence.
+        """
+
         hidden_states = self.model.predict(data)
         mapped = pd.Series(hidden_states, index=data.index).map(self.index_remap)
         return mapped.apply(lambda x: f"regime{x+1}")
 
+
+
     def score(self, data: pd.DataFrame) -> float:
+        """
+        Compute the log-likelihood of the data under this model.
+        
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Time series data to score
+            
+        Returns
+        -------
+        float
+            Log-likelihood score
+        """
+
         return self.model.score(data)
 
     def num_params(self) -> int:
         """
-        Returns the count of free parameters for a GaussianHMM.
+        Calculate the number of free parameters in the model.
+        
+        For a Gaussian HMM, the parameters include:
+        - Initial state probabilities: n_regimes - 1
+        - Transition probabilities: n_regimes * (n_regimes - 1)
+        - Emission means: n_regimes * n_features
+        - Emission covariances: depends on covariance_type
+          - 'full': n_regimes * (n_features * (n_features + 1)) / 2
+          - 'diag': n_regimes * n_features
+            
+        Returns
+        -------
+        int
+            Total number of free parameters
+            
+        Notes
+        -----
+        This count is used for computing information criteria like AIC and BIC.
         """
+
         n_components = self.model.n_components
         n_features = self.model.means_.shape[1]
         init_params = n_components - 1
@@ -99,8 +315,15 @@ class GaussianHMMWrapper:
 
     def num_params_empirical(self) -> int:
         """
-        Returns a parameter count by inspecting array shapes in the fitted model.
-        For debugging or sanity check.
+        Calculate parameter count by directly examining array shapes.
+        
+        This alternative counting method inspects the actual arrays in the
+        fitted model. It serves as a sanity check for the theoretical count.
+        
+        Returns
+        -------
+        int
+            Total number of free parameters based on array dimensions
         """
         n_components = self.model.n_components
         init_params = n_components - 1
@@ -121,17 +344,78 @@ class GaussianHMMWrapper:
         return init_params + trans_params + means_params + cov_params
 
 
+
+
+
+
+
+
+
+
+
+
+
 class GMMHMMWrapper:
     """
-    Wraps hmmlearn's GMMHMM. Provides parameter counting methods and a transform method for state prediction.
+    Wrapper for hmmlearn's GMMHMM with additional functionality.
+    
+    This class provides a consistent interface for working with Gaussian Mixture HMMs,
+    with additional methods for state prediction, parameter counting, and more.
+    
+    A GMM-HMM models time series data as transitions between hidden states,
+    where each state emits observations according to a Gaussian Mixture Model.
+    
+    Parameters
+    ----------
+    n_regimes : int
+        Number of hidden states (regimes)
+    n_mix : int, default=2
+        Number of mixture components per state
+    covariance_type : str, default='full'
+        Type of covariance parameter, one of 'full', 'diag'
+    n_iter : int, default=100
+        Maximum number of EM iterations
+    tol : float, default=1e-3
+        Convergence threshold for EM algorithm
+        
+    Attributes
+    ----------
+    n_regimes : int
+        Number of hidden states
+    n_mix : int
+        Number of mixture components per state
+    covariance_type : str
+        Type of covariance matrices
+    n_iter : int
+        Maximum EM iterations
+    tol : float
+        Convergence tolerance
+    model : hmmlearn.hmm.GMMHMM
+        The underlying hmmlearn model
+    index_remap : dict
+        Maps original indices to sorted regime indices
+    regime_list : list of GaussianMixture
+        List of emission distributions for each regime
+    regime_dict : dict
+        Mapping from regime names to distributions
+        
+    Notes
+    -----
+    After fitting, regimes are sorted by their mean value on the first dimension
+    and renamed to "regime1", "regime2", etc.
+    
+    The emission probability for state j is given by a Gaussian mixture:
+    p(x_t|z_t=j) = Σ(w_{jk} * N(x_t|μ_{jk},Σ_{jk}))
+    where w_{jk}, μ_{jk}, and Σ_{jk} are the weight, mean, and covariance 
+    of the k-th component in state j.
     """
+    
     def __init__(self, n_regimes, n_mix=2, covariance_type='full', n_iter=100, tol=1e-3):
         self.n_regimes = n_regimes
         self.n_mix = n_mix
         self.covariance_type = covariance_type
         self.n_iter = n_iter
         self.tol = tol
-        from hmmlearn.hmm import GMMHMM
         self.model = GMMHMM(
             n_components=self.n_regimes,
             n_mix=self.n_mix,
@@ -143,7 +427,27 @@ class GMMHMMWrapper:
         self.regime_list = None
         self.regime_dict = None
 
+
     def fit(self, data: pd.DataFrame):
+        """
+        Fit the GMM-HMM to time series data.
+        
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Time series data to fit, with rows as time points and columns as variables
+            
+        Returns
+        -------
+        self
+            The fitted model instance
+            
+        Notes
+        -----
+        After fitting, regimes are sorted by their mean on the first dimension and 
+        indices are remapped accordingly.
+        """
+
         self.model.fit(data)
         mean_first_dim = self.model.means_[:, :, 0].mean(axis=1)
         sorted_idx = np.argsort(mean_first_dim)
@@ -169,14 +473,69 @@ class GMMHMMWrapper:
         return self
 
     def transform(self, data: pd.DataFrame) -> pd.Series:
+        """
+        Predict the most likely hidden state sequence for the given data.
+        
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Time series data for prediction
+            
+        Returns
+        -------
+        pd.Series
+            Series of predicted regime labels ("regime1", "regime2", etc.) with the
+            same index as the input data
+            
+        Notes
+        -----
+        Uses the Viterbi algorithm to find the most likely state sequence.
+        """
+
         hidden_states = self.model.predict(data)
         mapped = pd.Series(hidden_states, index=data.index).map(self.index_remap)
         return mapped.apply(lambda x: f"regime{x+1}")
 
     def score(self, data: pd.DataFrame) -> float:
+        """
+        Compute the log-likelihood of the data under this model.
+        
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Time series data to score
+            
+        Returns
+        -------
+        float
+            Log-likelihood score
+        """
+
         return self.model.score(data)
 
     def num_params(self) -> int:
+        """
+        Calculate the number of free parameters in the model.
+        
+        For a GMM-HMM, the parameters include:
+        - Initial state probabilities: n_regimes - 1
+        - Transition probabilities: n_regimes * (n_regimes - 1)
+        - Mixture weights: n_regimes * (n_mix - 1)
+        - Emission means: n_regimes * n_mix * n_features
+        - Emission covariances: depends on covariance_type
+          - 'full': n_regimes * n_mix * (n_features * (n_features + 1)) / 2
+          - 'diag': n_regimes * n_mix * n_features
+            
+        Returns
+        -------
+        int
+            Total number of free parameters
+            
+        Notes
+        -----
+        This count is used for computing information criteria like AIC and BIC.
+        """
+
         n_components = self.model.n_components
         n_mix = self.model.n_mix
         n_features = self.model.means_.shape[2]
@@ -196,6 +555,18 @@ class GMMHMMWrapper:
         return init_params + trans_params + mixture_weights + emission_total
 
     def num_params_empirical(self) -> int:
+        """
+        Calculate parameter count by directly examining array shapes.
+        
+        This alternative counting method inspects the actual arrays in the
+        fitted model. It serves as a sanity check for the theoretical count.
+        
+        Returns
+        -------
+        int
+            Total number of free parameters based on array dimensions
+        """
+
         n_components = self.model.n_components
         n_mix = self.model.n_mix
         init_params = n_components - 1
@@ -224,15 +595,103 @@ class GMMHMMWrapper:
 
 
 
+
 class GaussianARHMM:
     """
-    A robust AR(1) HMM consistent with the formula:
+    Autoregressive Hidden Markov Model with Gaussian emissions.
+    
+    This class implements an AR(1) HMM with state-dependent autoregressive coefficients.
+    The model follows the formula:
         X_t = means[j] + alpha * (ar_coeffs_[j] @ X_{t-1}) + noise
+    
+    where j is the hidden state at time t, means[j] is the state-specific mean,
+    ar_coeffs_[j] is the state-specific AR coefficient matrix, and alpha is a
+    global AR coefficient that can be either fixed or learned.
+    
+    Parameters
+    ----------
+    n_regimes : int
+        Number of hidden states (regimes)
+    covariance_type : str, default='full'
+        Type of covariance matrices, one of 'full', 'diag'
+    n_iter : int, default=100
+        Maximum number of EM iterations
+    tol : float, default=1e-3
+        Convergence threshold for EM algorithm
+    alpha : float, default=1.0
+        Initial value for the global AR coefficient
+    alpha_is_free : bool, default=False
+        Whether to learn alpha or keep it fixed
+    p : int, default=1
+        AR order (currently only p=1 is implemented)
+    floor_prob : float, default=1e-12
+        Minimal probability floor to avoid log(0) issues
+    max_alpha_passes : int, default=2
+        Number of times to refine alpha and AR in each M-step
+        
+    Attributes
+    ----------
+    n_regimes : int
+        Number of hidden states
+    covariance_type : str
+        Type of covariance matrices
+    n_iter : int
+        Maximum EM iterations
+    tol : float
+        Convergence tolerance
+    alpha : float
+        Global AR coefficient
+    alpha_is_free : bool
+        Whether alpha is learned
+    p : int
+        AR order
+    floor_prob : float
+        Probability floor
+    max_alpha_passes : int
+        Alpha refinement passes
+    means_ : numpy.ndarray
+        State-specific means, shape (n_regimes, n_features)
+    covars_ : numpy.ndarray
+        State-specific covariance matrices
+    ar_coeffs_ : numpy.ndarray
+        State-specific AR coefficient matrices, shape (n_regimes, n_features, n_features)
+    transmat_ : numpy.ndarray
+        Transition probability matrix, shape (n_regimes, n_regimes)
+    startprob_ : numpy.ndarray
+        Initial state probabilities, shape (n_regimes,)
+    fitted_ : bool
+        Whether the model has been fitted
+        
+    Notes
+    -----
+    This class implements the EM algorithm from scratch instead of using hmmlearn.
+    It performs forward-backward passes to compute exact posteriors, and uses
+    specialized M-step updates for the autoregressive coefficients.
+    
+    
+    Forward-Backward Algorithm:
+    - Forward recursion:
+        α_t(j) = p(x_1,...,x_t, z_t=j)
+        α_1(j) = p(z_1=j) * p(x_1|z_1=j)
+        α_t(j) = p(x_t|z_t=j) * Σ_i [α_{t-1}(i) * p(z_t=j|z_{t-1}=i)]
+    - Backward recursion:
+        β_t(j) = p(x_{t+1},...,x_T | z_t=j)
+        β_T(j) = 1
+        β_t(j) = Σ_i [p(z_{t+1}=i|z_t=j) * p(x_{t+1}|z_{t+1}=i) * β_{t+1}(i)]
+        
+    For posterior computation:
+    - State posterior:
+        γ_t(j) = p(z_t=j|x_1,...,x_T) = α_t(j) * β_t(j) / p(x_1,...,x_T)
+    - Transition posterior:
+        ξ_t(i,j) = p(z_t=i, z_{t+1}=j|x_1,...,x_T) 
+                = α_t(i) * p(z_{t+1}=j|z_t=i) * p(x_{t+1}|z_{t+1}=j) * β_{t+1}(j) / p(x_1,...,x_T)
+    
+    For the AR coefficient and alpha updates:
+    - The AR coefficients A_j are updated using weighted least squares:
+        A_j = (Σ_t γ_t(j) * x_{t-1} * x_{t-1}ᵀ)^(-1) * (Σ_t γ_t(j) * x_{t-1} * (x_t - μ_j)ᵀ)
 
-    Single-lag, with alpha optionally learned. Uses forward-backward to compute
-    exact pairwise posteriors (xi). Applies probability floors for transitions
-    and startprob to avoid log(0) issues, and supports repeated passes to refine
-    alpha and AR coefficients in each M-step.
+    - The global AR coefficient α is updated as:
+        α = Σ_{j,t} γ_t(j) * (x_t - μ_j)ᵀ * (A_j * x_{t-1}) / Σ_{j,t} γ_t(j) * (A_j * x_{t-1})ᵀ * (A_j * x_{t-1})
     """
 
     def __init__(
@@ -247,28 +706,6 @@ class GaussianARHMM:
         floor_prob: float = 1e-12,   # floor to avoid zero probabilities
         max_alpha_passes: int = 2,   # times to re-update alpha & AR in each M-step
     ):
-        """
-        Parameters
-        ----------
-        n_regimes : int
-            Number of hidden states (regimes).
-        covariance_type : str
-            'full' or 'diag'.
-        n_iter : int
-            Max EM iterations.
-        tol : float
-            Convergence threshold on log-likelihood.
-        alpha : float
-            Initial alpha for AR(1): X_t ~ mu_j + alpha * A_j X_{t-1} + noise.
-        alpha_is_free : bool
-            If True, we re-estimate alpha each M-step; otherwise, alpha is fixed.
-        p : int
-            AR order (currently only p=1 implemented).
-        floor_prob : float
-            Minimal probability floor for transitions and startprob.
-        max_alpha_passes : int
-            Times we refine alpha and AR in the M-step mini-loop.
-        """
         self.n_regimes = n_regimes
         self.covariance_type = covariance_type
         self.n_iter = n_iter
@@ -286,10 +723,30 @@ class GaussianARHMM:
         self.startprob_ = None
         self.fitted_ = False
 
+
     ########################################################################
     # Initialization
     ########################################################################
+    
+    
     def _init_params(self, data: np.ndarray):
+        """
+        Initialize model parameters before EM.
+        
+        Sets up initial values for means, AR coefficients, covariances,
+        transition matrix, and initial state probabilities.
+        
+        Parameters
+        ----------
+        data : numpy.ndarray
+            Time series data, shape (n_samples, n_features)
+            
+        Returns
+        -------
+        None
+            Initializes various model attributes
+        """
+
         n_features = data.shape[1]
 
         # means: shape (n_regimes, n_features)
@@ -313,12 +770,30 @@ class GaussianARHMM:
     ########################################################################
     # E-step: log-likelihood, forward-backward, gamma, xi
     ########################################################################
+    
+    
     def _compute_log_likelihood(self, data: np.ndarray) -> np.ndarray:
         """
-        log_likelihood[t, j] = log p(X(t) | state=j).
-        For t=0, we treat X(0) as generated from N(means_[j], covars_[j]).
-        For t>0:  means_[j] + alpha * (ar_coeffs_[j] @ X(t-1)).
+        Compute log-likelihood matrix for the E-step.
+        
+        Calculates log p(x_t | state=j) for each time point t and state j.
+        
+        Parameters
+        ----------
+        data : numpy.ndarray
+            Time series data, shape (n_samples, n_features)
+            
+        Returns
+        -------
+        numpy.ndarray
+            Log-likelihood matrix, shape (n_samples, n_regimes)
+            
+        Notes
+        -----
+        For t=0, we use a standard Gaussian likelihood.
+        For t>0, we use an AR(1) prediction with state-specific coefficients.
         """
+
         n_samples, d = data.shape
         log_likelihood = np.zeros((n_samples, self.n_regimes))
 
@@ -343,8 +818,21 @@ class GaussianARHMM:
 
     def _forward_pass(self, log_likelihood: np.ndarray) -> np.ndarray:
         """
-        forward[t, j] = log p(x(0..t), state(t)=j).
+        Perform the forward pass of the forward-backward algorithm.
+        
+        Computes forward probabilities alpha(t,j) = p(x_0...x_t, state_t=j)
+        
+        Parameters
+        ----------
+        log_likelihood : numpy.ndarray
+            Log-likelihood matrix from _compute_log_likelihood, shape (n_samples, n_regimes)
+            
+        Returns
+        -------
+        numpy.ndarray
+            Forward log-probabilities, shape (n_samples, n_regimes)
         """
+
         n_samples, n_states = log_likelihood.shape
         forward = np.full((n_samples, n_states), -np.inf)
 
@@ -362,7 +850,19 @@ class GaussianARHMM:
 
     def _backward_pass(self, log_likelihood: np.ndarray) -> np.ndarray:
         """
-        backward[t, i] = log p(x(t+1..end) | state(t)=i).
+        Perform the backward pass of the forward-backward algorithm.
+        
+        Computes backward probabilities beta(t,j) = p(x_{t+1}...x_T | state_t=j)
+        
+        Parameters
+        ----------
+        log_likelihood : numpy.ndarray
+            Log-likelihood matrix from _compute_log_likelihood, shape (n_samples, n_regimes)
+            
+        Returns
+        -------
+        numpy.ndarray
+            Backward log-probabilities, shape (n_samples, n_regimes)
         """
         n_samples, n_states = log_likelihood.shape
         backward = np.full((n_samples, n_states), -np.inf)
@@ -380,10 +880,31 @@ class GaussianARHMM:
 
     def _compute_posteriors(self, forward: np.ndarray, backward: np.ndarray, log_likelihood: np.ndarray):
         """
-        Return (gamma, xi, total_ll)
-
-        gamma[t, i] = p(state(t)=i | all data)
-        xi[t, i, j] = p(state(t)=i, state(t+1)=j | all data)
+        Compute posterior probabilities for the E-step.
+        
+        Parameters
+        ----------
+        forward : numpy.ndarray
+            Forward log-probabilities from _forward_pass
+        backward : numpy.ndarray
+            Backward log-probabilities from _backward_pass
+        log_likelihood : numpy.ndarray
+            Log-likelihood matrix from _compute_log_likelihood
+            
+        Returns
+        -------
+        tuple
+            gamma, xi, ll:
+            - gamma: State posteriors p(state_t=j | all data), shape (n_samples, n_regimes)
+            - xi: Transition posteriors p(state_t=i, state_{t+1}=j | all data), 
+              shape (n_samples-1, n_regimes, n_regimes)
+            - ll: Total log-likelihood of the data
+            
+        Notes
+        -----
+        gamma[t,j] is the probability of being in state j at time t given all data.
+        xi[t,i,j] is the probability of transitioning from state i at time t to 
+        state j at time t+1, given all data.
         """
         n_samples, n_states = forward.shape
         ll = np.logaddexp.reduce(forward[-1])  # log p(data)
@@ -409,6 +930,33 @@ class GaussianARHMM:
     # M-step
     ########################################################################
     def _update_parameters(self, data: np.ndarray, gamma: np.ndarray, xi: np.ndarray):
+        """
+        Update all model parameters in the M-step.
+        
+        Parameters
+        ----------
+        data : numpy.ndarray
+            Time series data, shape (n_samples, n_features)
+        gamma : numpy.ndarray
+            State posteriors from _compute_posteriors
+        xi : numpy.ndarray
+            Transition posteriors from _compute_posteriors
+            
+        Returns
+        -------
+        None
+            Updates model parameters in-place
+            
+        Notes
+        -----
+        This updates:
+        1. Initial state probabilities
+        2. Transition matrix
+        3. State-specific means
+        4. AR coefficients and alpha
+        5. State-specific covariances
+        """
+
         n_samples, d = data.shape
 
         # (1) Start probs
@@ -464,20 +1012,29 @@ class GaussianARHMM:
 
     def _update_ar_coeffs(self, data: np.ndarray, gamma: np.ndarray):
         """
-        Weighted least squares for each state j:
-          (X(t) - mu_j) = alpha * A_j X(t-1), for t=1..n_samples-1
-
-        We'll treat alpha as known here (either fixed or from a previous pass).
-        Then solve for A_j in normal eqns:
-
-           Y(t) = A_j Z(t),  where Y(t) = (X(t) - mu_j), Z(t) = alpha * X(t-1).
-
-        This yields:
-
-           A_j = pinv(Z^T W Z) (Z^T W Y).
-
-        We'll store A_j directly (no transpose).
+        Update the autoregressive coefficients in the M-step.
+        
+        Uses weighted least squares to estimate state-specific AR coefficients.
+        
+        Parameters
+        ----------
+        data : numpy.ndarray
+            Time series data, shape (n_samples, n_features)
+        gamma : numpy.ndarray
+            State posteriors
+            
+        Returns
+        -------
+        None
+            Updates ar_coeffs_ in-place
+            
+        Notes
+        -----
+        For each state j, solves for A_j in the equation:
+            (X_t - mu_j) = alpha * A_j X_{t-1}
+        using weighted least squares with gamma[t,j] as weights.
         """
+
         n_samples, d = data.shape
         for j in range(self.n_regimes):
             ZtZ = np.zeros((d, d))
@@ -510,12 +1067,27 @@ class GaussianARHMM:
 
     def _update_alpha(self, data: np.ndarray, gamma: np.ndarray):
         """
-        Single global alpha across all states j:
-          alpha = sum_{t,j} w[t,j]*(< (X(t)-mu_j), A_j X(t-1) >)
-                   / sum_{t,j} w[t,j]*(< A_j X(t-1), A_j X(t-1) >)
-
-        Weighted approach, ignoring t=0.
+        Update the global AR coefficient alpha in the M-step.
+        
+        Only used when alpha_is_free=True.
+        
+        Parameters
+        ----------
+        data : numpy.ndarray
+            Time series data, shape (n_samples, n_features)
+        gamma : numpy.ndarray
+            State posteriors
+            
+        Returns
+        -------
+        None
+            Updates alpha in-place
+            
+        Notes
+        -----
+        Uses a weighted approach across all states to compute a single global alpha.
         """
+
         n_samples, d = data.shape
         num = 0.0
         den = 1e-300
@@ -535,10 +1107,35 @@ class GaussianARHMM:
 
         self.alpha = num / den
 
+
     ########################################################################
     # Main Fit and Score
     ########################################################################
+
     def fit(self, data: pd.DataFrame):
+        """
+        Fit the AR-HMM to time series data using EM.
+        
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Time series data, with rows as time points and columns as variables
+            
+        Returns
+        -------
+        self
+            The fitted model instance
+            
+        Notes
+        -----
+        The fitting procedure:
+        1. Initializes parameters
+        2. Runs EM iterations until convergence or max_iter
+        3. For each iteration:
+           a. E-step: Compute log-likelihoods, forward-backward, posteriors
+           b. M-step: Update all model parameters
+        """
+
         data_array = data.values if isinstance(data, pd.DataFrame) else data
         self._init_params(data_array)
 
@@ -564,9 +1161,22 @@ class GaussianARHMM:
 
     def transform(self, data: pd.DataFrame) -> pd.Series:
         """
-        Posterior-based decoding (not Viterbi).
-        We'll pick the argmax of gamma[t].
+        Predict the most likely state sequence for the given data.
+        
+        Uses posterior decoding (not Viterbi algorithm) to assign states.
+        
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Time series data for prediction
+            
+        Returns
+        -------
+        pd.Series
+            Series of predicted regime labels ("regime1", "regime2", etc.) with the
+            same index as the input data
         """
+
         data_array = data.values if isinstance(data, pd.DataFrame) else data
         log_likelihood = self._compute_log_likelihood(data_array)
         forward = self._forward_pass(log_likelihood)
@@ -579,27 +1189,53 @@ class GaussianARHMM:
 
     def score(self, data: pd.DataFrame) -> float:
         """
-        Return the total log-likelihood of the data under the model.
+        Compute the log-likelihood of the data under this model.
+        
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Time series data to score
+            
+        Returns
+        -------
+        float
+            Log-likelihood score
         """
+
         data_array = data.values if isinstance(data, pd.DataFrame) else data
         log_likelihood = self._compute_log_likelihood(data_array)
         forward = self._forward_pass(log_likelihood)
         return np.logaddexp.reduce(forward[-1])
 
+
     ########################################################################
     # Parameter Counting
     ########################################################################
+    
     def num_params(self) -> int:
         """
-        AR(1) HMM param count:
-
-          - init: (n_regimes - 1)
-          - transition: n_regimes*(n_regimes - 1)
-          - means: n_regimes*d
-          - AR coeff: n_regimes*(d^2)
-          - alpha (if free): +1
-          - covars (full => n_regimes*(d(d+1)/2), diag => n_regimes*d)
+        Calculate the number of free parameters in the model.
+        
+        For an AR-HMM, the parameters include:
+        - Initial state probabilities: n_regimes - 1
+        - Transition probabilities: n_regimes * (n_regimes - 1)
+        - State means: n_regimes * n_features
+        - AR coefficients: n_regimes * (n_features * n_features)
+        - Alpha (if free): 1 or 0
+        - Covariances: depends on covariance_type
+          - 'full': n_regimes * (n_features * (n_features + 1)) / 2
+          - 'diag': n_regimes * n_features
+            
+        Returns
+        -------
+        int
+            Total number of free parameters
+            
+        Notes
+        -----
+        This count is used for computing information criteria like AIC and BIC.
         """
+
         if self.means_ is None:
             return 0
         n = self.n_regimes
@@ -620,7 +1256,15 @@ class GaussianARHMM:
 
     def num_params_empirical(self) -> int:
         """
-        An alternate shape-based count, for debugging.
+        Calculate parameter count by directly examining array shapes.
+        
+        This alternative counting method inspects the actual arrays in the
+        fitted model. It serves as a sanity check for the theoretical count.
+        
+        Returns
+        -------
+        int
+            Total number of free parameters based on array dimensions
         """
         if self.means_ is None:
             return 0
@@ -657,6 +1301,32 @@ class GaussianARHMM:
 
 
 def _log_gaussian(x, mean, cov):
+    """
+    Compute log probability density for a multivariate Gaussian.
+    
+    Parameters
+    ----------
+    x : numpy.ndarray
+        Point at which to evaluate, shape (d,)
+    mean : numpy.ndarray
+        Mean vector, shape (d,)
+    cov : numpy.ndarray
+        Covariance matrix, shape (d, d)
+        
+    Returns
+    -------
+    float
+        Log probability density at point x
+        
+    Notes
+    -----
+    Implements the formula:
+        log p(x) = -0.5 * (d*log(2π) + log|Σ| + (x-μ)ᵀΣ⁻¹(x-μ))
+    where d is the dimension, μ is the mean, and Σ is the covariance.
+    
+    A small value (-1e15) is returned if the covariance determinant is non-positive.
+    """
+
     d = len(x)
     diff = x - mean
     sign, logdet = np.linalg.slogdet(cov)
@@ -669,6 +1339,33 @@ def _log_gaussian(x, mean, cov):
     )
 
 def _log_gaussian_diag(x, mean, diagvar):
+    """
+    Compute log probability density for a Gaussian with diagonal covariance.
+    
+    Parameters
+    ----------
+    x : numpy.ndarray
+        Point at which to evaluate, shape (d,)
+    mean : numpy.ndarray
+        Mean vector, shape (d,)
+    diagvar : numpy.ndarray
+        Diagonal of covariance matrix, shape (d,)
+        
+    Returns
+    -------
+    float
+        Log probability density at point x
+        
+    Notes
+    -----
+    Implements the formula for diagonal covariance:
+        log p(x) = -0.5 * sum(log(2πσ²) + (x-μ)²/σ²)
+    where σ² is the variance for each dimension.
+    
+    This is more efficient than the full covariance computation when the
+    covariance matrix is diagonal.
+    """
+
     diff = x - mean
     var = diagvar
     log_prob = -0.5 * np.sum(np.log(2*np.pi*var) + (diff**2)/var)
