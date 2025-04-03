@@ -2,8 +2,12 @@
 
 import pandas as pd
 from anubis import Anubis
+from clean_outputs import clean_outputs  # Import the cleaning function
 
 if __name__ == "__main__":
+    # First, clean outputs directory with confirmation
+    clean_outputs()
+    
     data_file = "/Users/alessandromassaad/Desktop/ASK2Ai/RegimeDetection/warehouse/macro_reduced.parquet"
     macro_df = pd.read_parquet(data_file)
     macro_df.index = pd.to_datetime(macro_df.index)
