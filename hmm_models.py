@@ -186,15 +186,21 @@ class GaussianHMMWrapper:
         self.covariance_type = covariance_type
         self.n_iter = n_iter
         self.tol = tol
+        
+        # We specify init_params='st' so that hmmlearn does NOT overwrite means or covars.
+        # We keep params='stmc' so that EM still updates them.
         self.model = GaussianHMM(
             n_components=self.n_regimes,
             covariance_type=self.covariance_type,
             n_iter=self.n_iter,
-            tol=self.tol
+            tol=self.tol,
+            init_params='st',  # do NOT re-init means (m) or covars (c)
+            params='stmc'      # EM will learn s,t,m,c
         )
         self.regime_list = [None] * n_regimes
         self.regime_dict = {}
         self.index_remap = {i: i for i in range(n_regimes)}
+
 
     def fit(self, data: pd.DataFrame):
         """
@@ -416,12 +422,17 @@ class GMMHMMWrapper:
         self.covariance_type = covariance_type
         self.n_iter = n_iter
         self.tol = tol
+
+        # We specify init_params='st' so that hmmlearn does NOT overwrite means or covars.
+        # We keep params='stmc' so that EM will still optimize them.
         self.model = GMMHMM(
             n_components=self.n_regimes,
             n_mix=self.n_mix,
             covariance_type=self.covariance_type,
             n_iter=self.n_iter,
-            tol=self.tol
+            tol=self.tol,
+            init_params='st',  # do NOT re-init means (m) or covars (c)
+            params='stmc'      # EM will learn s,t,m,c
         )
         self.index_remap = None
         self.regime_list = None
