@@ -186,12 +186,18 @@ def fit_and_score_window(
     # Multiple inits: each time, see if prev_model is available to warm-start
     for _ in range(n_init):
         if model_type.lower() == 'gaussian':
+            # Set is_first_fit based on whether there's a previous model
+            is_first_time = prev_model is None or not isinstance(prev_model, GaussianHMMWrapper)
+            
             temp_model = GaussianHMMWrapper(
                 n_regimes=n,
                 covariance_type=covariance_type,
                 n_iter=n_iter,
                 tol=tol
             )
+            # Explicitly set the first_fit flag
+            temp_model.is_first_fit = is_first_time
+            
             # Warm start if we have a prev_model
             if prev_model is not None and isinstance(prev_model, GaussianHMMWrapper):
                 if hasattr(prev_model.model, 'means_'):
@@ -242,7 +248,7 @@ def fit_and_score_window(
             raise ValueError(f"Unknown model_type '{model_type}'")
 
         # Fit on the train_data
-        temp_model.fit(train_data)
+        temp_model.fit(train_data, prev_model if isinstance(prev_model, GaussianHMMWrapper) else None)
         ll = temp_model.score(train_data)
         if ll > best_logL:
             best_logL = ll
@@ -381,3 +387,6 @@ def fit_and_score_window(
         "BestInitTrainLogL": best_logL,
         "ModelObject": best_model
     }
+
+
+

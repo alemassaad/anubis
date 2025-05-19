@@ -5,6 +5,7 @@ import pandas as pd
 from hmmlearn import hmm
 from scipy.stats import multivariate_normal
 from hmmlearn.hmm import GaussianHMM,GMMHMM
+from regime_assignment import calculate_regime_distance, solve_regime_assignment
 
 
 
@@ -200,40 +201,136 @@ class GaussianHMMWrapper:
         self.regime_list = [None] * n_regimes
         self.regime_dict = {}
         self.index_remap = {i: i for i in range(n_regimes)}
-
-
-    def fit(self, data: pd.DataFrame):
-        """
-        Fit the Gaussian HMM to time series data.
         
-        Parameters
-        ----------
-        data : pd.DataFrame
-            Time series data to fit, with rows as time points and columns as variables
-            
-        Returns
-        -------
-        self
-            The fitted model instance
-            
-        Notes
-        -----
-        After fitting, regimes are sorted by their mean on the first dimension and 
-        indices are remapped accordingly.
-        """
+        self.assignment_alpha = 0.5  # Weight for mean vs covariance distance
+        self.is_first_fit = True     # Flag for first fitting
 
-        self.model.fit(data)
+
+
+
+
+    def fit(self, data: pd.DataFrame, previous_model=None):
+        """
+        Fit the Gaussian HMM to time series data with consistent regime labeling.
+        """
+        # Convert to numpy array if needed
+        data_array = data.values if isinstance(data, pd.DataFrame) else data
+        
+        # Fit the underlying model
+        self.model.fit(data_array)
+        
+        # Initialize regime objects
         for i in range(self.n_regimes):
             mg = MultivariateGaussian(
                 means=self.model.means_[i],
                 cov=self.model.covars_[i]
             )
             self.regime_list[i] = mg
-        sorted_idx = np.argsort(self.model.means_[:, 0])
-        self.index_remap = {old_idx: new_idx for new_idx, old_idx in enumerate(sorted_idx)}
-        self.regime_list = [self.regime_list[i] for i in sorted_idx]
-        self.regime_dict = {f"regime{i+1}": r for i, r in enumerate(self.regime_list)}
+        
+        # If this is the first fit or no previous model, use mean sorting approach
+        if self.is_first_fit or previous_model is None:
+            print(f"\n[REGIME TRACKING] First fit or no previous model, using mean sorting")
+            sorted_idx = np.argsort(self.model.means_[:, 0])
+            self.index_remap = {old_idx: new_idx for new_idx, old_idx in enumerate(sorted_idx)}
+            print(f"[DEBUG] Initial remap after mean sorting: {self.index_remap}")
+            self.regime_list = [self.regime_list[i] for i in sorted_idx]
+            self.regime_dict = {f"regime{i+1}": r for i, r in enumerate(self.regime_list)}
+            self.is_first_fit = False
+            return self
+        
+        # For subsequent fits with previous model, use optimal assignment
+        try:
+            print(f"\n[REGIME TRACKING] Using consistent regime assignment")
+            prev_means = previous_model.model.means_
+            prev_covars = previous_model.model.covars_
+            curr_means = self.model.means_
+            curr_covars = self.model.covars_
+            
+            print(f"[REGIME TRACKING] Previous means:\n{prev_means.round(3)}")
+            print(f"[REGIME TRACKING] Current means:\n{curr_means.round(3)}")
+            
+            # Calculate cost matrix
+            m = len(prev_means)  # number of previous regimes
+            n = len(curr_means)  # number of current regimes
+            cost_matrix = np.zeros((m, n))
+            
+            for i in range(m):
+                for j in range(n):
+                    cost_matrix[i, j] = calculate_regime_distance(
+                        prev_means[i], prev_covars[i],
+                        curr_means[j], curr_covars[j],
+                        alpha=self.assignment_alpha
+                    )
+            
+            # Solve assignment problem
+            assignments, _ = solve_regime_assignment(cost_matrix)
+            
+            # Debug print for assignments
+            print(f"[DEBUG] Received assignments: {assignments}")
+            print(f"[DEBUG] Number of prev regimes: {m}, Number of assigned: {len(assignments)}")
+            
+            # Create new index remapping
+            # This maps current regime indices to previous regime indices
+            new_remap = {}
+            print(f"[DEBUG] Building new_remap from assignments:")
+            for prev_idx, curr_idx in assignments.items():
+                new_remap[curr_idx] = prev_idx
+                print(f"[DEBUG]   Setting new_remap[{curr_idx}] = {prev_idx}")
+            
+            # Handle any new regimes that didn't get assigned to previous ones
+            print(f"[DEBUG] Current regime indices: {list(range(n))}")
+            print(f"[DEBUG] Assigned current indices: {list(new_remap.keys())}")
+            new_regimes = set(range(n)) - set(new_remap.keys())
+            print(f"[DEBUG] Unassigned new regimes: {new_regimes}")
+            
+            # Assign new indices to new regimes
+            next_new_idx = m
+            for curr_idx in new_regimes:
+                new_remap[curr_idx] = next_new_idx
+                print(f"[DEBUG]   Assigning new index {next_new_idx} to new regime {curr_idx}")
+                next_new_idx += 1
+            
+            # Set the new remapping
+            self.index_remap = new_remap
+            
+            print(f"[REGIME TRACKING] Final index remapping: {self.index_remap}")
+            
+            # Reorder regime_list and regime_dict based on assignment
+            print(f"[DEBUG] Creating new regime list with max index {max(n, next_new_idx)}")
+            new_regime_list = [None] * max(n, next_new_idx)
+            for curr_idx, final_idx in self.index_remap.items():
+                print(f"[DEBUG]   Setting new_regime_list[{final_idx}] = regime_list[{curr_idx}]")
+                new_regime_list[final_idx] = self.regime_list[curr_idx]
+            
+            # Debug check for the new regime list
+            print(f"[DEBUG] New regime list content check:")
+            for i, regime in enumerate(new_regime_list):
+                print(f"[DEBUG]   {i}: {'Valid regime' if regime is not None else 'None'}")
+            
+            # Filter out None values and update regime_list
+            self.regime_list = [r for r in new_regime_list if r is not None]
+            print(f"[DEBUG] Final regime_list length: {len(self.regime_list)}")
+            self.regime_dict = {f"regime{i+1}": r for i, r in enumerate(self.regime_list)}
+            print(f"[DEBUG] Final regime_dict keys: {list(self.regime_dict.keys())}")
+            
+        except Exception as e:
+            print(f"[REGIME TRACKING] Error in regime assignment: {e}. Falling back to sorting by means.")
+            print(f"[DEBUG] Exception details: {str(e)}")
+            print(f"[DEBUG] Exception type: {type(e)}")
+            sorted_idx = np.argsort(self.model.means_[:, 0])
+            self.index_remap = {old_idx: new_idx for new_idx, old_idx in enumerate(sorted_idx)}
+            self.regime_list = [self.regime_list[i] for i in sorted_idx]
+            self.regime_dict = {f"regime{i+1}": r for i, r in enumerate(self.regime_list)}
+        
         return self
+
+
+
+
+
+
+
+
 
 
 
@@ -251,15 +348,25 @@ class GaussianHMMWrapper:
         pd.Series
             Series of predicted regime labels ("regime1", "regime2", etc.) with the
             same index as the input data
-            
-        Notes
-        -----
-        Uses the Viterbi algorithm to find the most likely state sequence.
         """
-
+        # Get raw state sequence from model
         hidden_states = self.model.predict(data)
-        mapped = pd.Series(hidden_states, index=data.index).map(self.index_remap)
-        return mapped.apply(lambda x: f"regime{x+1}")
+        
+        # Map using our consistent remapping
+        mapped_states = np.zeros_like(hidden_states)
+        for i in range(len(hidden_states)):
+            if hidden_states[i] in self.index_remap:
+                mapped_states[i] = self.index_remap[hidden_states[i]]
+            else:
+                # Handle unexpected state - should not occur but add as safety
+                mapped_states[i] = hidden_states[i]
+        
+        # Convert to series and then to regime labels
+        mapped = pd.Series(mapped_states, index=data.index)
+        return mapped.apply(lambda x: f"regime{int(x)+1}")
+
+
+
 
 
 

@@ -2,7 +2,7 @@
 
 import pandas as pd
 from anubis import Anubis
-from clean_outputs import clean_outputs  # Import the cleaning function
+from clean_outputs import clean_outputs 
 
 if __name__ == "__main__":
     # First, clean outputs directory with confirmation
@@ -18,30 +18,51 @@ if __name__ == "__main__":
 
 
 
-    n = 2
-    N = 3 # (included)
+    n = 6
+    N = 6 # (included)
     
     
     
-    # # VANILLA HMM ONLY
-    # model_list = [
-    #                 {"model_type": "gaussian", "n": k, "covariance_type": "full", "n_iter": 5, "tol": 1e-2}
-    #                 for k in range(n, N+1)
-    #                 ]
-
-
-
-
-
-
-
-
-    # GAUSSIAN MIXTURE HMM ONLY
+    # VANILLA HMM ONLY
     model_list = [
-                    {"model_type": "gmm", "n": k, "covariance_type": "full", "n_iter": 5, "tol": 1e-2, "n_mix": 2}
+                    {"model_type": "gaussian", "n": k, "covariance_type": "full", "n_iter": 5, "tol": 1e-2}
                     for k in range(n, N+1)
                     ]
+
+
+
+
+    # # GAUSSIAN MIXTURE HMM ONLY
+    # model_list = [
+    #                 {"model_type": "gmm", "n": k, "covariance_type": "full", "n_iter": 5, "tol": 1e-2, "n_mix": 2}
+    #                 for k in range(n, N+1)
+    #                 ]
     
+    
+    
+    
+    
+    # # VANILLA HMM + GAUSSIAN MIXTURE HMM
+    # model_list = [
+    #                 {
+    #                     "model_type": "gaussian", 
+    #                     "n": k, 
+    #                     "covariance_type": "full", 
+    #                     "n_iter": 5, 
+    #                     "tol": 1e-2
+    #                 }
+    #                 for k in range(n, N+1)
+    #             ] + [
+    #                 {
+    #                     "model_type": "gmm", 
+    #                     "n": k, 
+    #                     "covariance_type": "full", 
+    #                     "n_iter": 5, 
+    #                     "tol": 1e-2, 
+    #                     "n_mix": 2
+    #                 }
+    #                 for k in range(n, N+1)
+    #             ]
     
     
     
@@ -51,9 +72,15 @@ if __name__ == "__main__":
     
     # # AUTOREGRESSIVE HMM ONLY
     # model_list = [
-    #                 {"model_type": "arhmm", "n": k, "covariance_type": "full", "n_iter": 5, "tol": 1e-2}
-    #                 for k in range(n, N+1)
-    #                 ]
+    #                 {
+    #                     "model_type": "arhmm", 
+    #                     "n": k, 
+    #                     "covariance_type": "full", 
+    #                     "n_iter": 5, 
+    #                     "tol": 1e-2
+    #                 }
+    #             for k in range(n, N+1)
+    #             ]
     
     
     
@@ -100,10 +127,19 @@ if __name__ == "__main__":
     #     ]
     # )
 
+
+
+
+
+
+
+
+
+
     # Here we set up our expanding-window parameters:
     initial_train_frac = 0.5
     increment_frac = 0.1
-    n_init = 10  # multiple random starts
+    n_init = 12  # multiple random starts
 
     # Create Anubis instance for the expanding-window approach:
     anubis = Anubis(
