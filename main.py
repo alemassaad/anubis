@@ -18,23 +18,23 @@ if __name__ == "__main__":
 
 
 
-    n = 6
+    n = 2
     N = 6 # (included)
     
     
     
-    # VANILLA HMM ONLY
-    model_list = [
-                    {"model_type": "gaussian", "n": k, "covariance_type": "full", "n_iter": 5, "tol": 1e-2}
-                    for k in range(n, N+1)
-                    ]
+    # # Gaussian HMM ONLY
+    # model_list = [
+    #                 {"model_type": "gaussian", "n": k, "covariance_type": "full", "n_iter": 5, "tol": 1e-2}
+    #                 for k in range(n, N+1)
+    #                 ]
 
 
 
 
     # # GAUSSIAN MIXTURE HMM ONLY
     # model_list = [
-    #                 {"model_type": "gmm", "n": k, "covariance_type": "full", "n_iter": 5, "tol": 1e-2, "n_mix": 2}
+    #                 {"model_type": "gmm", "n": k, "covariance_type": "full", "n_iter": 5, "tol": 1e-2, "n_mix": 3}
     #                 for k in range(n, N+1)
     #                 ]
     
@@ -42,94 +42,20 @@ if __name__ == "__main__":
     
     
     
-    # # VANILLA HMM + GAUSSIAN MIXTURE HMM
-    # model_list = [
-    #                 {
-    #                     "model_type": "gaussian", 
-    #                     "n": k, 
-    #                     "covariance_type": "full", 
-    #                     "n_iter": 5, 
-    #                     "tol": 1e-2
-    #                 }
-    #                 for k in range(n, N+1)
-    #             ] + [
-    #                 {
-    #                     "model_type": "gmm", 
-    #                     "n": k, 
-    #                     "covariance_type": "full", 
-    #                     "n_iter": 5, 
-    #                     "tol": 1e-2, 
-    #                     "n_mix": 2
-    #                 }
-    #                 for k in range(n, N+1)
-    #             ]
     
     
+    # GaussianARHMM ONLY
+    model_list = [
+                    {
+                        "model_type": "arhmm", 
+                        "n": k, 
+                        "covariance_type": "full", 
+                        "n_iter": 5, 
+                        "tol": 1e-2
+                    }
+                for k in range(n, N+1)
+                ]
     
-    
-    
-    
-    
-    # # AUTOREGRESSIVE HMM ONLY
-    # model_list = [
-    #                 {
-    #                     "model_type": "arhmm", 
-    #                     "n": k, 
-    #                     "covariance_type": "full", 
-    #                     "n_iter": 5, 
-    #                     "tol": 1e-2
-    #                 }
-    #             for k in range(n, N+1)
-    #             ]
-    
-    
-    
-    
-    
-    
-    
-    
-    # # ALL THREE MODEL TYPES
-    # model_list = (
-    #     [
-    #         {
-    #             "model_type": "gaussian",
-    #             "n": k,
-    #             "covariance_type": "full",
-    #             "n_iter": 30,
-    #             "tol": 1e-4
-    #         }
-    #         for k in range(n, N+1)
-    #     ]
-    #     + [
-    #         {
-    #             "model_type": "gmm",
-    #             "n": k,
-    #             "covariance_type": "full",
-    #             "n_mix": 2,
-    #             "n_iter": 30,
-    #             "tol": 1e-4
-    #         }
-    #         for k in range(n, N+1)
-    #     ]
-    #     + [
-    #         {
-    #             "model_type": "arhmm",
-    #             "n": k,
-    #             "covariance_type": "full",
-    #             "n_iter": 20,
-    #             "tol": 1e-3,
-    #             "alpha": 1.0,
-    #             "alpha_is_free": False, 
-    #             "p": 1
-    #         }
-    #         for k in range(n, N+1)
-    #     ]
-    # )
-
-
-
-
 
 
 

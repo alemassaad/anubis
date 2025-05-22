@@ -203,7 +203,12 @@ class GaussianHMMWrapper:
         self.index_remap = {i: i for i in range(n_regimes)}
         
         self.assignment_alpha = 0.5  # Weight for mean vs covariance distance
-        self.is_first_fit = True     # Flag for first fitting
+        #self.is_first_fit = True     # Flag for first fitting
+
+
+
+
+
 
 
 
@@ -227,15 +232,14 @@ class GaussianHMMWrapper:
             )
             self.regime_list[i] = mg
         
-        # If this is the first fit or no previous model, use mean sorting approach
-        if self.is_first_fit or previous_model is None:
+        # If no previous model, use mean sorting approach
+        if previous_model is None:
             print(f"\n[REGIME TRACKING] First fit or no previous model, using mean sorting")
             sorted_idx = np.argsort(self.model.means_[:, 0])
             self.index_remap = {old_idx: new_idx for new_idx, old_idx in enumerate(sorted_idx)}
             print(f"[DEBUG] Initial remap after mean sorting: {self.index_remap}")
             self.regime_list = [self.regime_list[i] for i in sorted_idx]
             self.regime_dict = {f"regime{i+1}": r for i, r in enumerate(self.regime_list)}
-            self.is_first_fit = False
             return self
         
         # For subsequent fits with previous model, use optimal assignment
@@ -262,15 +266,14 @@ class GaussianHMMWrapper:
                         alpha=self.assignment_alpha
                     )
             
+            print(f"[DEBUG] Cost matrix for assignment:\n{cost_matrix.round(4)}")
+            
             # Solve assignment problem
             assignments, _ = solve_regime_assignment(cost_matrix)
             
-            # Debug print for assignments
-            print(f"[DEBUG] Received assignments: {assignments}")
-            print(f"[DEBUG] Number of prev regimes: {m}, Number of assigned: {len(assignments)}")
+            print(f"[DEBUG] Optimal assignment result: {assignments}")
             
             # Create new index remapping
-            # This maps current regime indices to previous regime indices
             new_remap = {}
             print(f"[DEBUG] Building new_remap from assignments:")
             for prev_idx, curr_idx in assignments.items():
@@ -302,11 +305,6 @@ class GaussianHMMWrapper:
                 print(f"[DEBUG]   Setting new_regime_list[{final_idx}] = regime_list[{curr_idx}]")
                 new_regime_list[final_idx] = self.regime_list[curr_idx]
             
-            # Debug check for the new regime list
-            print(f"[DEBUG] New regime list content check:")
-            for i, regime in enumerate(new_regime_list):
-                print(f"[DEBUG]   {i}: {'Valid regime' if regime is not None else 'None'}")
-            
             # Filter out None values and update regime_list
             self.regime_list = [r for r in new_regime_list if r is not None]
             print(f"[DEBUG] Final regime_list length: {len(self.regime_list)}")
@@ -323,8 +321,6 @@ class GaussianHMMWrapper:
             self.regime_dict = {f"regime{i+1}": r for i, r in enumerate(self.regime_list)}
         
         return self
-
-
 
 
 
@@ -546,31 +542,35 @@ class GMMHMMWrapper:
         self.regime_dict = None
 
 
-    def fit(self, data: pd.DataFrame):
+
+
+
+
+
+
+    def fit(self, data: pd.DataFrame, previous_model=None):
         """
-        Fit the GMM-HMM to time series data.
+        Fit the GMM-HMM to time series data with consistent regime labeling.
         
         Parameters
         ----------
         data : pd.DataFrame
-            Time series data to fit, with rows as time points and columns as variables
+            Time series data to fit
+        previous_model : GMMHMMWrapper, optional
+            Previous model for consistent regime tracking
             
         Returns
         -------
         self
             The fitted model instance
-            
-        Notes
-        -----
-        After fitting, regimes are sorted by their mean on the first dimension and 
-        indices are remapped accordingly.
         """
-
-        self.model.fit(data)
-        mean_first_dim = self.model.means_[:, :, 0].mean(axis=1)
-        sorted_idx = np.argsort(mean_first_dim)
-        self.index_remap = {old_idx: new_idx for new_idx, old_idx in enumerate(sorted_idx)}
-
+        # Convert to numpy array if needed
+        data_array = data.values if isinstance(data, pd.DataFrame) else data
+        
+        # Fit the underlying model
+        self.model.fit(data_array)
+        
+        # Initialize regime objects
         regime_list = []
         for i in range(self.n_regimes):
             weights_i = self.model.weights_[i]
@@ -583,12 +583,129 @@ class GMMHMMWrapper:
                 gaussians_i.append(mg)
             mixture = GaussianMixture(weights=weights_i, gaussians=gaussians_i)
             regime_list.append(mixture)
-
-        # reorder
-        regime_list = [regime_list[i] for i in sorted_idx]
-        self.regime_list = regime_list
-        self.regime_dict = {f"regime{i+1}": r for i, r in enumerate(self.regime_list)}
+        
+        # If no previous model, use mean sorting approach
+        if previous_model is None:
+            print(f"\n[REGIME TRACKING] First fit or no previous model, using mean sorting")
+            # For GMM, sort by average mean across mixture components in first dimension
+            mean_first_dim = self.model.means_[:, :, 0].mean(axis=1)
+            sorted_idx = np.argsort(mean_first_dim)
+            self.index_remap = {old_idx: new_idx for new_idx, old_idx in enumerate(sorted_idx)}
+            self.regime_list = [regime_list[i] for i in sorted_idx]
+            self.regime_dict = {f"regime{i+1}": r for i, r in enumerate(self.regime_list)}
+            return self
+        
+        # For subsequent fits with previous model, use optimal assignment
+        try:
+            print(f"\n[REGIME TRACKING] Using consistent regime assignment for GMM")
+            
+            # Calculate average means and covariances for each regime
+            # For GMM, we need to compute a representative mean/cov for each regime
+            prev_means = []
+            prev_covars = []
+            curr_means = []
+            curr_covars = []
+            
+            # Previous model regime means (average across mixture components)
+            for i in range(previous_model.n_regimes):
+                prev_mean = np.average(
+                    previous_model.model.means_[i], 
+                    weights=previous_model.model.weights_[i], 
+                    axis=0
+                )
+                prev_means.append(prev_mean)
+                # For covariance, use weighted average too
+                prev_cov = np.zeros_like(previous_model.model.covars_[i, 0])
+                for j in range(previous_model.n_mix):
+                    prev_cov += previous_model.model.weights_[i, j] * previous_model.model.covars_[i, j]
+                prev_covars.append(prev_cov)
+            
+            # Current model regime means (average across mixture components)
+            for i in range(self.n_regimes):
+                curr_mean = np.average(
+                    self.model.means_[i], 
+                    weights=self.model.weights_[i], 
+                    axis=0
+                )
+                curr_means.append(curr_mean)
+                # For covariance, use weighted average
+                curr_cov = np.zeros_like(self.model.covars_[i, 0])
+                for j in range(self.n_mix):
+                    curr_cov += self.model.weights_[i, j] * self.model.covars_[i, j]
+                curr_covars.append(curr_cov)
+            
+            prev_means = np.array(prev_means)
+            prev_covars = np.array(prev_covars)
+            curr_means = np.array(curr_means)
+            curr_covars = np.array(curr_covars)
+            
+            print(f"[REGIME TRACKING] Previous regime means:\n{prev_means.round(3)}")
+            print(f"[REGIME TRACKING] Current regime means:\n{curr_means.round(3)}")
+            
+            # Calculate cost matrix
+            m = len(prev_means)  # number of previous regimes
+            n = len(curr_means)  # number of current regimes
+            cost_matrix = np.zeros((m, n))
+            
+            for i in range(m):
+                for j in range(n):
+                    cost_matrix[i, j] = calculate_regime_distance(
+                        prev_means[i], prev_covars[i],
+                        curr_means[j], curr_covars[j],
+                        alpha=0.5  # Default weight
+                    )
+            
+            print(f"[DEBUG] Cost matrix for assignment:\n{cost_matrix.round(4)}")
+            
+            # Solve assignment problem
+            assignments, _ = solve_regime_assignment(cost_matrix)
+            
+            print(f"[DEBUG] Optimal assignment result: {assignments}")
+            
+            # Create new index remapping
+            new_remap = {}
+            for prev_idx, curr_idx in assignments.items():
+                new_remap[curr_idx] = prev_idx
+            
+            # Handle any new regimes
+            new_regimes = set(range(n)) - set(new_remap.keys())
+            next_new_idx = m
+            for curr_idx in new_regimes:
+                new_remap[curr_idx] = next_new_idx
+                next_new_idx += 1
+            
+            # Set the new remapping
+            self.index_remap = new_remap
+            
+            print(f"[REGIME TRACKING] Final index remapping: {self.index_remap}")
+            
+            # Reorder regime_list based on assignment
+            new_regime_list = [None] * max(n, next_new_idx)
+            for curr_idx, final_idx in self.index_remap.items():
+                new_regime_list[final_idx] = regime_list[curr_idx]
+            
+            # Filter out None values
+            self.regime_list = [r for r in new_regime_list if r is not None]
+            self.regime_dict = {f"regime{i+1}": r for i, r in enumerate(self.regime_list)}
+            
+        except Exception as e:
+            print(f"[REGIME TRACKING] Error in regime assignment: {e}. Falling back to sorting by means.")
+            mean_first_dim = self.model.means_[:, :, 0].mean(axis=1)
+            sorted_idx = np.argsort(mean_first_dim)
+            self.index_remap = {old_idx: new_idx for new_idx, old_idx in enumerate(sorted_idx)}
+            self.regime_list = [regime_list[i] for i in sorted_idx]
+            self.regime_dict = {f"regime{i+1}": r for i, r in enumerate(self.regime_list)}
+        
         return self
+
+
+
+
+
+
+
+
+
 
     def transform(self, data: pd.DataFrame) -> pd.Series:
         """
@@ -812,47 +929,57 @@ class GaussianARHMM:
         α = Σ_{j,t} γ_t(j) * (x_t - μ_j)ᵀ * (A_j * x_{t-1}) / Σ_{j,t} γ_t(j) * (A_j * x_{t-1})ᵀ * (A_j * x_{t-1})
     """
 
+
+
+
     def __init__(
-        self,
-        n_regimes: int,
-        covariance_type: str = 'full',
-        n_iter: int = 100,
-        tol: float = 1e-3,
-        alpha: float = 1.0,
-        alpha_is_free: bool = False,
-        p: int = 1,
-        floor_prob: float = 1e-12,   # floor to avoid zero probabilities
-        max_alpha_passes: int = 2,   # times to re-update alpha & AR in each M-step
-    ):
-        self.n_regimes = n_regimes
-        self.covariance_type = covariance_type
-        self.n_iter = n_iter
-        self.tol = tol
-        self.alpha = alpha
-        self.alpha_is_free = alpha_is_free
-        self.p = p  # only 1 used
-        self.floor_prob = floor_prob
-        self.max_alpha_passes = max_alpha_passes
+            self,
+            n_regimes: int,
+            covariance_type: str = 'full',
+            n_iter: int = 100,
+            tol: float = 1e-3,
+            alpha: float = 1.0,
+            alpha_is_free: bool = False,
+            p: int = 1,
+            floor_prob: float = 1e-12,   # floor to avoid zero probabilities
+            max_alpha_passes: int = 2,   # times to re-update alpha & AR in each M-step
+        ):
+            self.n_regimes = n_regimes
+            self.covariance_type = covariance_type
+            self.n_iter = n_iter
+            self.tol = tol
+            self.alpha = alpha
+            self.alpha_is_free = alpha_is_free
+            self.p = p  # only 1 used
+            self.floor_prob = floor_prob
+            self.max_alpha_passes = max_alpha_passes
 
-        self.means_ = None
-        self.covars_ = None
-        self.ar_coeffs_ = None
-        self.transmat_ = None
-        self.startprob_ = None
-        self.fitted_ = False
-
+            self.means_ = None
+            self.covars_ = None
+            self.ar_coeffs_ = None
+            self.transmat_ = None
+            self.startprob_ = None
+            self.fitted_ = False
+            
+            # Added for regime consistency
+            self.index_remap = {i: i for i in range(n_regimes)}
+            self.assignment_alpha = 0.5  # Weight for mean vs covariance distance
+            
+            
+        
 
     ########################################################################
     # Initialization
     ########################################################################
-    
     
     def _init_params(self, data: np.ndarray):
         """
         Initialize model parameters before EM.
         
         Sets up initial values for means, AR coefficients, covariances,
-        transition matrix, and initial state probabilities.
+        transition matrix, and initial state probabilities. If parameters
+        are already set (e.g., via warm-start), they will not be overridden
+        unless their shapes are incorrect.
         
         Parameters
         ----------
@@ -865,25 +992,61 @@ class GaussianARHMM:
             Initializes various model attributes
         """
 
-        n_features = data.shape[1]
+        n_samples, n_features = data.shape #
 
         # means: shape (n_regimes, n_features)
-        self.means_ = np.random.randn(self.n_regimes, n_features)
+        expected_means_shape = (self.n_regimes, n_features)
+        if self.means_ is None or not hasattr(self.means_, 'shape') or self.means_.shape != expected_means_shape:
+            # print("[ARHMM _init_params] Initializing means_ randomly.") # Optional debug print
+            self.means_ = np.random.randn(self.n_regimes, n_features) #
+        # else:
+            # print("[ARHMM _init_params] Using pre-set means_.") # Optional debug print
+
         # AR coeffs: shape (n_regimes, n_features, n_features)
         # Each A_j is (d x d), so (ar_coeffs_[j] @ X_{t-1}) has shape (d,)
-        self.ar_coeffs_ = np.random.randn(self.n_regimes, n_features, n_features)
+        expected_ar_coeffs_shape = (self.n_regimes, n_features, n_features)
+        if self.ar_coeffs_ is None or not hasattr(self.ar_coeffs_, 'shape') or self.ar_coeffs_.shape != expected_ar_coeffs_shape:
+            # print("[ARHMM _init_params] Initializing ar_coeffs_ randomly.") # Optional debug print
+            self.ar_coeffs_ = np.random.randn(self.n_regimes, n_features, n_features) #
+        # else:
+            # print("[ARHMM _init_params] Using pre-set ar_coeffs_.") # Optional debug print
 
         # Covariances
-        if self.covariance_type == 'full':
-            self.covars_ = np.stack([np.eye(n_features) for _ in range(self.n_regimes)])
-        elif self.covariance_type == 'diag':
-            self.covars_ = np.ones((self.n_regimes, n_features))
+        if self.covariance_type == 'full': #
+            expected_covars_shape = (self.n_regimes, n_features, n_features)
+            if self.covars_ is None or not hasattr(self.covars_, 'shape') or self.covars_.shape != expected_covars_shape:
+                # print("[ARHMM _init_params] Initializing full covars_.") # Optional debug print
+                self.covars_ = np.stack([np.eye(n_features) for _ in range(self.n_regimes)]) #
+            # else:
+                # print("[ARHMM _init_params] Using pre-set full covars_.") # Optional debug print
+        elif self.covariance_type == 'diag': #
+            expected_covars_shape = (self.n_regimes, n_features)
+            if self.covars_ is None or not hasattr(self.covars_, 'shape') or self.covars_.shape != expected_covars_shape:
+                # print("[ARHMM _init_params] Initializing diag covars_.") # Optional debug print
+                self.covars_ = np.ones((self.n_regimes, n_features)) #
+            # else:
+                # print("[ARHMM _init_params] Using pre-set diag covars_.") # Optional debug print
         else:
-            raise NotImplementedError(f"Unsupported covariance type {self.covariance_type}.")
+            raise NotImplementedError(f"Unsupported covariance type {self.covariance_type}.") #
 
         # Start prob, transmat
-        self.startprob_ = np.full(self.n_regimes, 1.0 / self.n_regimes)
-        self.transmat_ = np.full((self.n_regimes, self.n_regimes), 1.0 / self.n_regimes)
+        expected_startprob_shape = (self.n_regimes,)
+        if self.startprob_ is None or not hasattr(self.startprob_, 'shape') or self.startprob_.shape != expected_startprob_shape:
+            # print("[ARHMM _init_params] Initializing startprob_ uniformly.") # Optional debug print
+            self.startprob_ = np.full(self.n_regimes, 1.0 / self.n_regimes) #
+        # else:
+            # print("[ARHMM _init_params] Using pre-set startprob_.") # Optional debug print
+
+        expected_transmat_shape = (self.n_regimes, self.n_regimes)
+        if self.transmat_ is None or not hasattr(self.transmat_, 'shape') or self.transmat_.shape != expected_transmat_shape:
+            # print("[ARHMM _init_params] Initializing transmat_ uniformly.") # Optional debug print
+            self.transmat_ = np.full((self.n_regimes, self.n_regimes), 1.0 / self.n_regimes) #
+        # else:
+            # print("[ARHMM _init_params] Using pre-set transmat_.") # Optional debug print
+
+        # self.alpha is initialized in __init__ and can be updated if prev_model.alpha is copied
+        # by the calling function (e.g. fit_and_score_window) before fit is called.
+        # No specific re-initialization of self.alpha is needed here beyond what's in __init__.
 
     ########################################################################
     # E-step: log-likelihood, forward-backward, gamma, xi
@@ -1230,81 +1393,324 @@ class GaussianARHMM:
     # Main Fit and Score
     ########################################################################
 
-    def fit(self, data: pd.DataFrame):
-        """
-        Fit the AR-HMM to time series data using EM.
+
+
+
+
+
+
+
+
+
+
+    def fit(self, data: pd.DataFrame, previous_model=None):
+            """
+            Fit the AR-HMM to time series data using EM, with consistent regime labeling.
+            
+            Parameters
+            ----------
+            data : pd.DataFrame
+                Time series data, with rows as time points and columns as variables
+            previous_model : GaussianARHMM, optional
+                A previously fitted ARHMM model instance for consistent regime tracking.
+                
+            Returns
+            -------
+            self
+                The fitted model instance
+                
+            Notes
+            -----
+            The fitting procedure:
+            1. Initializes parameters
+            2. Runs EM iterations until convergence or max_iter
+            3. For each iteration:
+            a. E-step: Compute log-likelihoods, forward-backward, posteriors
+            b. M-step: Update all model parameters
+            4. Performs regime assignment for consistency if previous_model is provided.
+            """
+            from regime_assignment import calculate_regime_distance, solve_regime_assignment # Moved import here
+            data_array = data.values if isinstance(data, pd.DataFrame) else data
+            
+            # Ensure n_features matches if parameters are warm-started
+            n_samples, n_features = data_array.shape
+            if self.means_ is not None and self.means_.shape[1] != n_features:
+                # Reset parameters if feature dimension changed
+                self.means_ = None
+                self.covars_ = None
+                self.ar_coeffs_ = None
+                # startprob_ and transmat_ are based on n_regimes, not n_features
+
+            self._init_params(data_array) # Initializes based on self.n_regimes and n_features
+
+            # Store initial number of regimes, can be updated by assignment
+            # This self.n_regimes is the one from __init__ or warm-start.
+            # The actual number of states in self.means_ etc. after EM is self.means_.shape[0]
+            # which should match self.n_regimes at this point.
+            
+            current_n_regimes = self.means_.shape[0] # Number of regimes *before* assignment
+
+            old_ll = -np.inf
+            for iteration in range(self.n_iter):
+                # E-step
+                log_likelihood = self._compute_log_likelihood(data_array)
+                forward = self._forward_pass(log_likelihood)
+                backward = self._backward_pass(log_likelihood)
+                gamma, xi, ll = self._compute_posteriors(forward, backward, log_likelihood)
+
+                # M-step
+                self._update_parameters(data_array, gamma, xi)
+
+                if not np.isfinite(ll): # Check for non-finite log-likelihood
+                    print(f"[ARHMM Fit] Warning: Non-finite log-likelihood ({ll}) at iteration {iteration}. Stopping EM.")
+                    # Optionally, could revert to parameters from previous iteration or handle error
+                    break 
+                    
+                if abs(ll - old_ll) < self.tol:
+                    break
+                old_ll = ll
+
+            self.fitted_ = True
+
+            # --- Regime Assignment Logic ---
+            # Parameters (self.means_, self.covars_, etc.) are now fitted for current_n_regimes
+
+            if previous_model is None or not isinstance(previous_model, GaussianARHMM):
+                print(f"\n[ARHMM REGIME TRACKING] First fit or no previous ARHMM model, using mean sorting.")
+                if self.means_ is not None and self.means_.shape[0] > 0:
+                    # Sort by the mean of the first feature
+                    sorted_idx = np.argsort(self.means_[:, 0])
+                    self.index_remap = {old_idx: new_idx for new_idx, old_idx in enumerate(sorted_idx)}
+                    
+                    # Reorder parameters based on sorted_idx
+                    # The new order is defined by sorted_idx mapping to 0, 1, ..., K-1
+                    # So, new_param[new_idx] = old_param[old_idx_corresponding_to_new_idx]
+                    # which means old_param[sorted_idx[new_idx]]
+                    self.means_ = self.means_[sorted_idx]
+                    if self.covariance_type == 'full':
+                        self.covars_ = self.covars_[sorted_idx]
+                    else: # diag
+                        self.covars_ = self.covars_[sorted_idx]
+                    self.ar_coeffs_ = self.ar_coeffs_[sorted_idx]
+                    self.startprob_ = self.startprob_[sorted_idx]
+                    self.transmat_ = self.transmat_[sorted_idx][:, sorted_idx]
+                    # n_regimes remains current_n_regimes
+                else:
+                    print("[ARHMM REGIME TRACKING] No means to sort, using default index_remap.")
+                    self.index_remap = {i: i for i in range(current_n_regimes)}
+
+
+            else: # previous_model is provided
+                print(f"\n[ARHMM REGIME TRACKING] Using consistent regime assignment with previous ARHMM model.")
+                prev_means = previous_model.means_
+                prev_covars = previous_model.covars_
+                # Current model's parameters are self.means_, self.covars_ (these are raw from EM)
+                
+                num_prev_regimes = prev_means.shape[0]
+                num_curr_raw_regimes = self.means_.shape[0] # Regimes in current model before re-ordering
+
+                print(f"[ARHMM REGIME TRACKING] Previous model regimes: {num_prev_regimes}")
+                print(f"[ARHMM REGIME TRACKING] Current model raw regimes: {num_curr_raw_regimes}")
+                print(f"[ARHMM REGIME TRACKING] Previous means (first 3):\n{prev_means[:3].round(3)}")
+                print(f"[ARHMM REGIME TRACKING] Current means (first 3 before assignment):\n{self.means_[:3].round(3)}")
+
+                cost_matrix = np.zeros((num_prev_regimes, num_curr_raw_regimes))
+                for i in range(num_prev_regimes):
+                    for j in range(num_curr_raw_regimes):
+                        cost_matrix[i, j] = calculate_regime_distance(
+                            prev_means[i], prev_covars[i],
+                            self.means_[j], self.covars_[j], # Use current model's raw params
+                            alpha=self.assignment_alpha
+                        )
+                
+                print(f"[ARHMM DEBUG] Cost matrix for assignment:\n{cost_matrix.round(4)}")
+                
+                try:
+                    assignments, _ = solve_regime_assignment(cost_matrix)
+                    print(f"[ARHMM DEBUG] Optimal assignment result (prev_idx: curr_raw_idx): {assignments}")
+
+                    new_remap = {} # Maps current model's raw index to final consistent index
+                    
+                    # Assign based on previous model's indices
+                    for prev_idx, curr_raw_idx in assignments.items():
+                        new_remap[curr_raw_idx] = prev_idx 
+                    
+                    # Handle new regimes in the current model that weren't assigned to any previous ones
+                    # These get new indices starting after the max index from previous model
+                    next_new_final_idx = num_prev_regimes
+                    assigned_curr_raw_indices = set(new_remap.keys())
+
+                    for curr_raw_idx in range(num_curr_raw_regimes):
+                        if curr_raw_idx not in assigned_curr_raw_indices:
+                            new_remap[curr_raw_idx] = next_new_final_idx
+                            print(f"[ARHMM DEBUG] Assigning new final index {next_new_final_idx} to new raw regime {curr_raw_idx}")
+                            next_new_final_idx += 1
+                    
+                    self.index_remap = new_remap
+                    print(f"[ARHMM REGIME TRACKING] Final index remapping (curr_raw_idx: final_idx): {self.index_remap}")
+
+                    # Determine the number of final regimes
+                    num_final_regimes = max(num_curr_raw_regimes, next_new_final_idx, num_prev_regimes)
+                    if not self.index_remap: # If index_remap is empty (e.g. 0 regimes)
+                        num_final_regimes = 0
+                    elif self.index_remap:
+                        num_final_regimes = max(self.index_remap.values()) + 1
+
+
+                    # Reorder all parameters of the current model
+                    # Create new parameter arrays based on num_final_regimes
+                    n_features = self.means_.shape[1]
+
+                    new_means = np.zeros((num_final_regimes, n_features))
+                    if self.covariance_type == 'full':
+                        new_covars = np.zeros((num_final_regimes, n_features, n_features))
+                    else: # diag
+                        new_covars = np.zeros((num_final_regimes, n_features))
+                    new_ar_coeffs = np.zeros((num_final_regimes, n_features, n_features))
+                    new_startprob = np.zeros(num_final_regimes)
+                    new_transmat = np.zeros((num_final_regimes, num_final_regimes))
+
+                    for curr_raw_idx, final_idx in self.index_remap.items():
+                        if curr_raw_idx < num_curr_raw_regimes: # Ensure raw index is valid
+                            new_means[final_idx] = self.means_[curr_raw_idx]
+                            new_covars[final_idx] = self.covars_[curr_raw_idx]
+                            new_ar_coeffs[final_idx] = self.ar_coeffs_[curr_raw_idx]
+                            new_startprob[final_idx] = self.startprob_[curr_raw_idx]
+                    
+                    # Reorder transmat
+                    for curr_raw_i, final_i in self.index_remap.items():
+                        for curr_raw_j, final_j in self.index_remap.items():
+                            if curr_raw_i < num_curr_raw_regimes and curr_raw_j < num_curr_raw_regimes:
+                                new_transmat[final_i, final_j] = self.transmat_[curr_raw_i, curr_raw_j]
+                    
+                    # Normalize startprob and transmat rows
+                    if np.sum(new_startprob) > 0:
+                        new_startprob /= np.sum(new_startprob)
+                    else: # Avoid division by zero if all are zero (e.g. if num_final_regimes = 0)
+                        new_startprob = np.full(num_final_regimes, 1.0 / num_final_regimes if num_final_regimes > 0 else 1.0)
+
+
+                    for i in range(num_final_regimes):
+                        if np.sum(new_transmat[i]) > 0:
+                            new_transmat[i] /= np.sum(new_transmat[i])
+                        else:
+                            new_transmat[i] = np.full(num_final_regimes, 1.0 / num_final_regimes if num_final_regimes > 0 else 1.0)
+
+
+                    self.means_ = new_means
+                    self.covars_ = new_covars
+                    self.ar_coeffs_ = new_ar_coeffs
+                    self.startprob_ = new_startprob
+                    self.transmat_ = new_transmat
+                    self.n_regimes = num_final_regimes # Update the number of regimes
+
+                    print(f"[ARHMM REGIME TRACKING] Parameters reordered. New n_regimes: {self.n_regimes}")
+
+                except Exception as e:
+                    print(f"[ARHMM REGIME TRACKING] Error in regime assignment: {e}. Falling back to sorting by means.")
+                    # Fallback to mean sorting
+                    if self.means_ is not None and self.means_.shape[0] > 0:
+                        sorted_idx = np.argsort(self.means_[:, 0])
+                        self.index_remap = {old_idx: new_idx for new_idx, old_idx in enumerate(sorted_idx)}
+                        self.means_ = self.means_[sorted_idx]
+                        self.covars_ = self.covars_[sorted_idx]
+                        self.ar_coeffs_ = self.ar_coeffs_[sorted_idx]
+                        self.startprob_ = self.startprob_[sorted_idx]
+                        self.transmat_ = self.transmat_[sorted_idx][:, sorted_idx]
+                    else:
+                        self.index_remap = {i: i for i in range(current_n_regimes)}
+
+
+            return self
         
-        Parameters
-        ----------
-        data : pd.DataFrame
-            Time series data, with rows as time points and columns as variables
-            
-        Returns
-        -------
-        self
-            The fitted model instance
-            
-        Notes
-        -----
-        The fitting procedure:
-        1. Initializes parameters
-        2. Runs EM iterations until convergence or max_iter
-        3. For each iteration:
-           a. E-step: Compute log-likelihoods, forward-backward, posteriors
-           b. M-step: Update all model parameters
-        """
+        
+        
+        
+        
+    
+    
+    
+    
+    
 
-        data_array = data.values if isinstance(data, pd.DataFrame) else data
-        self._init_params(data_array)
 
-        old_ll = -np.inf
-        for iteration in range(self.n_iter):
-            # E-step
-            log_likelihood = self._compute_log_likelihood(data_array)
-            forward = self._forward_pass(log_likelihood)
-            backward = self._backward_pass(log_likelihood)
 
-            gamma, xi, ll = self._compute_posteriors(forward, backward, log_likelihood)
 
-            # M-step
-            self._update_parameters(data_array, gamma, xi)
-
-            # Check convergence
-            if abs(ll - old_ll) < self.tol:
-                break
-            old_ll = ll
-
-        self.fitted_ = True
-        return self
 
     def transform(self, data: pd.DataFrame) -> pd.Series:
-        """
-        Predict the most likely state sequence for the given data.
-        
-        Uses posterior decoding (not Viterbi algorithm) to assign states.
-        
-        Parameters
-        ----------
-        data : pd.DataFrame
-            Time series data for prediction
+            """
+            Predict the most likely state sequence for the given data.
             
-        Returns
-        -------
-        pd.Series
-            Series of predicted regime labels ("regime1", "regime2", etc.) with the
-            same index as the input data
-        """
+            Uses posterior decoding (not Viterbi algorithm) to assign states.
+            Applies consistent regime labeling based on index_remap.
+            
+            Parameters
+            ----------
+            data : pd.DataFrame
+                Time series data for prediction
+                
+            Returns
+            -------
+            pd.Series
+                Series of predicted regime labels ("regime1", "regime2", etc.) with the
+                same index as the input data
+            """
+            if not self.fitted_:
+                raise RuntimeError("Model has not been fitted yet. Call fit() first.")
+            if self.means_ is None or self.means_.shape[0] == 0 : # check if model has 0 regimes
+                # Handle case with 0 regimes: return NaNs or an empty series of appropriate type
+                return pd.Series([np.nan] * len(data), index=data.index, name='Regime')
 
-        data_array = data.values if isinstance(data, pd.DataFrame) else data
-        log_likelihood = self._compute_log_likelihood(data_array)
-        forward = self._forward_pass(log_likelihood)
-        backward = self._backward_pass(log_likelihood)
-        ll = np.logaddexp.reduce(forward[-1])
 
-        gamma = np.exp(forward + backward - ll)
-        states = np.argmax(gamma, axis=1)
-        return pd.Series(states, index=data.index, name='Regime').apply(lambda x: f"regime{x+1}")
+            data_array = data.values if isinstance(data, pd.DataFrame) else data
+            log_likelihood = self._compute_log_likelihood(data_array) # Uses self.n_regimes (final)
+            forward = self._forward_pass(log_likelihood)
+            backward = self._backward_pass(log_likelihood)
+            
+            # Ensure forward[-1] is not all -np.inf before logaddexp
+            if np.all(np.isneginf(forward[-1])):
+                # This can happen if all paths have zero probability, e.g. underflow or bad parameters
+                # Assign states based on highest log_likelihood per step or handle as error
+                print("[ARHMM Transform] Warning: All forward paths have zero probability. States might be unreliable.")
+                # Fallback: predict based on maximum likelihood for each observation
+                raw_states = np.argmax(log_likelihood, axis=1)
+            else:
+                ll = np.logaddexp.reduce(forward[-1])
+                gamma = np.exp(forward + backward - ll)
+                raw_states = np.argmax(gamma, axis=1)
 
+            # Map raw states to consistent final regime indices
+            # self.index_remap maps {raw_em_idx_before_reordering: final_consistent_idx}
+            # However, after reordering in fit(), the parameters self.means_[k] already correspond to final_consistent_idx k.
+            # So, the raw_states from argmax(gamma) are already effectively the final_consistent_idx.
+            # The self.index_remap applied during fit() reorders the parameters.
+            # The output of argmax(gamma) will be indices from 0 to self.n_regimes-1,
+            # which directly correspond to the reordered parameters.
+            # So, no further mapping via self.index_remap is needed here IF parameters are reordered.
+            # If parameters were NOT reordered, then we'd need to map:
+            # mapped_states = np.array([self.index_remap.get(s, s) for s in raw_states])
+            # But since they ARE reordered, raw_states are the final indices.
+
+            # The labels are "regime1", "regime2", etc.
+            # So, if raw_state is 0, it's "regime1".
+            # Example: If index_remap was {raw0:final1, raw1:final0} and params were reordered,
+            # then gamma's columns correspond to final0, final1. argmax(gamma) gives final indices.
+            
+            # The raw_states are already the final consistent indices because the model parameters
+            # (means_, covars_, startprob_, transmat_) used to compute gamma were reordered according to index_remap.
+            # Thus, the j-th column of gamma corresponds to the j-th (final) consistent regime.
+            
+            final_states = raw_states
+
+            return pd.Series(final_states, index=data.index, name='Regime').apply(lambda x: f"regime{int(x)+1}")
+        
+        
+        
+        
+        
+        
+        
+        
     def score(self, data: pd.DataFrame) -> float:
         """
         Compute the log-likelihood of the data under this model.
@@ -1324,6 +1730,13 @@ class GaussianARHMM:
         log_likelihood = self._compute_log_likelihood(data_array)
         forward = self._forward_pass(log_likelihood)
         return np.logaddexp.reduce(forward[-1])
+        
+        
+        
+        
+        
+    
+    
 
 
     ########################################################################
